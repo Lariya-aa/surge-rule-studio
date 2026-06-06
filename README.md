@@ -1,75 +1,42 @@
 # Surge Rule Studio
 
-Surge Rule Studio is a self-hostable Sites app for checking the current access
-path for a URL, classifying discovered domains, and exporting selected results
-as Surge `.list` rules.
+Surge Rule Studio 是一个自托管的 Surge 代理规则生成工具，用于分析网页域名、判断直连/代理/阻断分类，并导出 Surge `.list` 规则文件。
 
-## What it does
+## 功能
 
-- Runs a browser-side reachability probe for the current user network. This is
-  shown as the current access path, not proof of direct connectivity, because a
-  local proxy app can make browser requests reachable through proxy routing.
-- Runs a server-side fetch to extract domains from readable HTML, CSS, JSON, JS,
-  XML, SVG, and related text resources.
-- Accepts pasted `surge-cli --raw dump recent` JSON or loose Surge logs, then
-  separates DIRECT, proxy-routed, blocked, and unknown evidence. Only explicit
-  Surge DIRECT evidence is treated as verified direct connectivity.
-- De-noises discovered hosts by selecting the input domain, same-site domains,
-  high-confidence runtime/CDN/media hosts, and known podcast/provider hosts by
-  default while leaving unrelated candidates visible for manual selection.
-- Classifies domains as domestic direct, global proxy, region-sensitive,
-  blocked, or ad/promotion/tracking candidates.
-- Lets users override labels and selection before generating Surge rules.
-- Provides purpose tags such as AI, Google, YouTube, Netflix, Game, Forum,
-  Apple, Podcast, Ads, Privacy, and Custom. Tags keep session-local rule
-  buckets; manual GitHub path edits override tag path suggestions.
-- Supports exact `DOMAIN` rules or collapsed `DOMAIN-SUFFIX` rules.
-- Makes the generated Surge list editable. Copy, download, and GitHub upload
-  use the edited text until the user regenerates it.
-- Merges selected rules into a user's GitHub `.list` file through the GitHub
-  Contents API.
-- Keeps developer link icons in the UI. Fill
-  `src/config/developerLinks.ts` before publishing a public fork.
+- **域名提取** — 从目标网页的 HTML/CSS/JS/JSON 中自动提取所有域名
+- **智能分类** — 将域名分为：国内直连、国外规则、区域敏感、阻断域名、广告/推广/跟踪
+- **DNS 连通性检测** — 通过 DNS-over-HTTPS (Cloudflare/Google) 解析域名 IP，判断是否为中国 IP，显示直连/代理状态徽章
+- **广告/追踪过滤** — 内置 263+ 广告/追踪域名后缀 + 子域名关键词匹配
+- **域名分组** — 自动按基础域名聚合子域名，输入域名高亮显示
+- **连通性筛选** — 按直连/代理/未知状态筛选域名列表
+- **域名搜索** — 快速搜索定位域名
+- **用途标签** — AI、Google、YouTube、Netflix 等标签分类管理规则
+- **自定义标签** — 支持创建、持久化、删除自定义标签
+- **Surge 证据** — 支持粘贴 Surge dump/log，识别 DIRECT/PROXY/BLOCKED 证据
+- **GitHub 上传** — 增量保存规则到 GitHub 仓库
 
-## Privacy boundaries
-
-- GitHub tokens are used only for the current upload request and are never saved
-  to D1.
-- D1 stores aggregate domain observation counts and export counts only. It does
-  not persist the full URL submitted by the user.
-- Ad/tracker detection is a candidate classification, not an automatic block
-  decision. Users choose whether those rules are exported.
-
-## Local development
+## 本地开发
 
 ```bash
 npm install
-npm run dev -- --hostname 127.0.0.1 --port 3000
+npm run dev
 ```
 
-Open `http://127.0.0.1:3000`.
+打开 `http://localhost:3000`。
 
-## Verification
+## 测试
 
 ```bash
-npm run db:generate
-npm run test
-npm run lint
-npm run build
-npm run test:e2e
+npm run test            # 运行测试
+npm run test -- --coverage  # 带覆盖率报告
 ```
 
-Coverage thresholds are enforced in `vitest.config.ts`: statements, functions,
-and lines must stay at or above 90%; branches must stay at or above 85%.
+覆盖率阈值：statements/branches/functions/lines 均 ≥ 95%。
 
-## Deployment
+## 技术栈
 
-This project uses the bundled Sites vinext layout. `.openai/hosting.json`
-declares:
-
-- `project_id`: remote Sites project id
-- `d1`: logical D1 binding name, `DB`
-- `r2`: unused
-
-After schema changes, run `npm run db:generate` and keep the generated
-`drizzle/` migration files with the source.
+- Next.js + React + TypeScript
+- Vitest + @testing-library/react
+- Cloudflare Workers (部署目标)
+- DNS-over-HTTPS (连通性检测)
