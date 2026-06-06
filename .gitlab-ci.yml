@@ -27,6 +27,8 @@ deploy:
   script:
     - npm ci --prefer-offline
     - npm run build
+    # Remove placeholder D1 binding (not used by the app)
+    - sed -i 's/"d1_databases":\[{"binding":"DB","database_name":"site-creator-d1","database_id":"00000000-0000-4000-8000-000000000000"}\]/"d1_databases":[]/' dist/server/wrangler.json
     - npx wrangler deploy --config dist/server/wrangler.json
   cache:
     key: ${CI_COMMIT_REF_SLUG}
