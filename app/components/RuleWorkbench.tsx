@@ -121,6 +121,7 @@ export default function RuleWorkbench() {
   const [connectivityMap, setConnectivityMap] = useState<Map<string, ConnectivityResult>>(new Map());
   const [connectivityFilter, setConnectivityFilter] = useState<"all" | ConnectivityStatus>("all");
   const [domainSearch, setDomainSearch] = useState("");
+  const [buttonFeedback, setButtonFeedback] = useState<"regenerate" | "copy" | "download" | "">("");
   const [githubForm, setGithubForm] = useState({
     owner: "",
     repo: "",
@@ -298,8 +299,14 @@ export default function RuleWorkbench() {
     setSurgeEdited(false);
   }
 
+  function showFeedback(which: "regenerate" | "copy" | "download") {
+    setButtonFeedback(which);
+    setTimeout(() => setButtonFeedback(""), 1200);
+  }
+
   async function handleCopy() {
     await navigator.clipboard.writeText(surgeText);
+    showFeedback("copy");
   }
 
   function handleDownload() {
@@ -310,6 +317,7 @@ export default function RuleWorkbench() {
     anchor.download = `${titleFromUrl(url)}.list`;
     anchor.click();
     URL.revokeObjectURL(href);
+    showFeedback("download");
   }
 
   async function handleUpload() {
@@ -612,14 +620,29 @@ export default function RuleWorkbench() {
             <div className="flex items-center justify-between border-b border-[#e1e6dc] px-4 py-3">
               <h2 className="font-semibold">Surge list 输出</h2>
               <div className="flex gap-2">
-                <button className="grid h-9 w-9 place-items-center rounded-md border border-[#cbd4c6]" onClick={() => { setSurgeEdited(false); setSurgeDraft(""); }} title="Regenerate" type="button">
-                  <RotateCcw size={17} />
+                <button
+                  className={`grid h-9 w-9 place-items-center rounded-md border transition-colors ${buttonFeedback === "regenerate" ? "border-emerald-500 bg-emerald-50 text-emerald-600" : "border-[#cbd4c6] text-[#26312b] hover:border-[#173b35]"}`}
+                  onClick={() => { setSurgeEdited(false); setSurgeDraft(""); showFeedback("regenerate"); }}
+                  title="Regenerate"
+                  type="button"
+                >
+                  {buttonFeedback === "regenerate" ? <CheckCircle2 size={17} /> : <RotateCcw size={17} />}
                 </button>
-                <button className="grid h-9 w-9 place-items-center rounded-md border border-[#cbd4c6]" onClick={handleCopy} title="Copy" type="button">
-                  <Copy size={17} />
+                <button
+                  className={`grid h-9 w-9 place-items-center rounded-md border transition-colors ${buttonFeedback === "copy" ? "border-emerald-500 bg-emerald-50 text-emerald-600" : "border-[#cbd4c6] text-[#26312b] hover:border-[#173b35]"}`}
+                  onClick={handleCopy}
+                  title="Copy"
+                  type="button"
+                >
+                  {buttonFeedback === "copy" ? <CheckCircle2 size={17} /> : <Copy size={17} />}
                 </button>
-                <button className="grid h-9 w-9 place-items-center rounded-md border border-[#cbd4c6]" onClick={handleDownload} title="Download" type="button">
-                  <Download size={17} />
+                <button
+                  className={`grid h-9 w-9 place-items-center rounded-md border transition-colors ${buttonFeedback === "download" ? "border-emerald-500 bg-emerald-50 text-emerald-600" : "border-[#cbd4c6] text-[#26312b] hover:border-[#173b35]"}`}
+                  onClick={handleDownload}
+                  title="Download"
+                  type="button"
+                >
+                  {buttonFeedback === "download" ? <CheckCircle2 size={17} /> : <Download size={17} />}
                 </button>
               </div>
             </div>

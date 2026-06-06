@@ -1165,6 +1165,59 @@ describe("connectivity filter and search", () => {
   }, 10_000);
 });
 
+describe("button click feedback", () => {
+  it("shows emerald feedback on copy button click", async () => {
+    const user = userEvent.setup();
+    const clipboard = { writeText: vi.fn(async () => undefined) };
+    Object.defineProperty(navigator, "clipboard", { value: clipboard, configurable: true });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+
+    render(<RuleWorkbench />);
+    const copyBtn = screen.getByTitle("Copy");
+    await user.click(copyBtn);
+
+    // Should show emerald feedback (bg-emerald-50 class)
+    await waitFor(() => {
+      expect(copyBtn.className).toContain("emerald");
+    });
+  });
+
+  it("shows emerald feedback on download button click", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+    if (!URL.createObjectURL) {
+      Object.defineProperty(URL, "createObjectURL", { value: () => "", configurable: true });
+    }
+    if (!URL.revokeObjectURL) {
+      Object.defineProperty(URL, "revokeObjectURL", { value: () => undefined, configurable: true });
+    }
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:rules");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    render(<RuleWorkbench />);
+    const downloadBtn = screen.getByTitle("Download");
+    await user.click(downloadBtn);
+
+    await waitFor(() => {
+      expect(downloadBtn.className).toContain("emerald");
+    });
+  });
+
+  it("shows emerald feedback on regenerate button click", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+
+    render(<RuleWorkbench />);
+    const regenBtn = screen.getByTitle("Regenerate");
+    await user.click(regenBtn);
+
+    await waitFor(() => {
+      expect(regenBtn.className).toContain("emerald");
+    });
+  });
+});
+
 describe("connectivityBadge", () => {
   it("returns correct badge for each status", () => {
     expect(connectivityBadge(undefined)).toEqual({ emoji: "⚪", label: "未知" });

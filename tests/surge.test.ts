@@ -159,6 +159,33 @@ describe("surge domain utilities", () => {
     expect(isRegionSensitive("store.apple.com")).toBe(true);
     expect(isAdOrTracker("events.hotjar.com")).toBe(true);
     expect(isAdOrTracker("127.0.0.1")).toBe(false);
+    // New expanded suffix list entries
+    expect(isAdOrTracker("cdn.segment.com")).toBe(true);
+    expect(isAdOrTracker("app.sentry.io")).toBe(true);
+    expect(isAdOrTracker("cdn.tiktokcdn.com")).toBe(true);
+    expect(isAdOrTracker("analytics.datadoghq.com")).toBe(true);
+    // Keyword-based detection in subdomains
+    expect(isAdOrTracker("ads.example.com")).toBe(true);
+    expect(isAdOrTracker("tracking.example.com")).toBe(true);
+    expect(isAdOrTracker("analytics.example.com")).toBe(true);
+    expect(isAdOrTracker("pixel.example.com")).toBe(true);
+    expect(isAdOrTracker("beacon.example.com")).toBe(true);
+    expect(isAdOrTracker("telemetry.example.com")).toBe(true);
+    expect(isAdOrTracker("counter.example.com")).toBe(true);
+    expect(isAdOrTracker("click.example.com")).toBe(true);
+    expect(isAdOrTracker("tracker.example.com")).toBe(true);
+    expect(isAdOrTracker("tracking.example.com")).toBe(true);
+    expect(isAdOrTracker("cookie.example.com")).toBe(true);
+    expect(isAdOrTracker("consent.example.com")).toBe(true);
+    expect(isAdOrTracker("retarget.example.com")).toBe(true);
+    expect(isAdOrTracker("adtrack.example.com")).toBe(true);
+    expect(isAdOrTracker("popup.example.com")).toBe(true);
+    expect(isAdOrTracker("fingerprint.example.com")).toBe(true);
+    expect(isAdOrTracker("pixel.example.com")).toBe(true);
+    expect(isAdOrTracker("tagmanager.example.com")).toBe(true);
+    // Should not match base domain labels
+    expect(isAdOrTracker("example.com")).toBe(false);
+    expect(isAdOrTracker("api.example.com")).toBe(false);
   });
 
   it("builds grouped Surge list text with selected rules only", () => {
