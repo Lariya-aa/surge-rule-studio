@@ -14,7 +14,7 @@ describe("RuleWorkbench", () => {
     render(<RuleWorkbench />);
     expect(screen.getByRole("heading", { name: "Surge Rule Studio" })).toBeInTheDocument();
     expect(screen.getByLabelText("Developer links")).toBeInTheDocument();
-    expect(screen.getByTitle("GitHub URL placeholder")).toBeInTheDocument();
+    expect(screen.getByTitle("GitHub")).toBeInTheDocument();
     expect(screen.getByTitle("Social URL placeholder")).toBeInTheDocument();
     expect(screen.getByTitle("Website URL placeholder")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "判断并生成规则" })).toBeInTheDocument();
