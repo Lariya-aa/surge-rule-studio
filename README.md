@@ -1,42 +1,110 @@
 # Surge Rule Studio
 
-Surge Rule Studio 是一个自托管的 Surge 代理规则生成工具，用于分析网页域名、判断直连/代理/阻断分类，并导出 Surge `.list` 规则文件。
+A self-hosted tool for analyzing website domains, classifying direct/proxy/blocked connectivity, and generating Surge proxy rules.
 
-## 功能
+## Features
 
-- **域名提取** — 从目标网页的 HTML/CSS/JS/JSON 中自动提取所有域名
-- **智能分类** — 将域名分为：国内直连、国外规则、区域敏感、阻断域名、广告/推广/跟踪
-- **DNS 连通性检测** — 通过 DNS-over-HTTPS (Cloudflare/Google) 解析域名 IP，判断是否为中国 IP，显示直连/代理状态徽章
-- **广告/追踪过滤** — 内置 263+ 广告/追踪域名后缀 + 子域名关键词匹配
-- **域名分组** — 自动按基础域名聚合子域名，输入域名高亮显示
-- **连通性筛选** — 按直连/代理/未知状态筛选域名列表
-- **域名搜索** — 快速搜索定位域名
-- **用途标签** — AI、Google、YouTube、Netflix 等标签分类管理规则
-- **自定义标签** — 支持创建、持久化、删除自定义标签
-- **Surge 证据** — 支持粘贴 Surge dump/log，识别 DIRECT/PROXY/BLOCKED 证据
-- **GitHub 上传** — 增量保存规则到 GitHub 仓库
+- **Domain Extraction** — Automatically extracts all domains from HTML/CSS/JS/JSON resources
+- **Smart Classification** — Categorizes domains into: Direct CN, Proxy Global, Region-Sensitive, Blocked, Ad/Tracking
+- **DNS Connectivity Detection** — Uses DNS-over-HTTPS (Cloudflare/Google) to determine if domains resolve to Chinese IPs
+- **Ad/Tracker Filtering** — 263+ known ad/tracker domain suffixes + keyword-based subdomain matching
+- **Domain Grouping** — Collapses subdomains under base domains; highlights the input domain
+- **Connectivity Filter** — Filter domain list by direct/proxy/unknown status
+- **Domain Search** — Quick search across discovered domains
+- **Purpose Tags** — AI, Google, YouTube, Netflix, Game, Podcast, Ads, Privacy, and custom tags
+- **Custom Tags** — Create, persist, and delete custom tags with localStorage
+- **Surge Evidence** — Paste Surge dump/logs to identify DIRECT/PROXY/BLOCKED evidence
+- **GitHub Upload** — Incremental save rules to GitHub repository
 
-## 本地开发
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Framework | Next.js 16 (App Router) |
+| Runtime | Cloudflare Workers (via vinext) |
+| Database | Cloudflare D1 |
+| UI | React 19, Tailwind CSS 4, Lucide Icons |
+| Testing | Vitest, @testing-library/react, Playwright |
+| Deploy | Cloudflare Workers / Docker |
+
+## Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-打开 `http://localhost:3000`。
+Open `http://localhost:3000`.
 
-## 测试
+## Docker
 
 ```bash
-npm run test            # 运行测试
-npm run test -- --coverage  # 带覆盖率报告
+# Build
+docker build -t surge-rule-studio .
+
+# Run locally (preview mode)
+docker run -p 8787:8787 surge-rule-studio
+
+# Deploy to Cloudflare
+docker run -e CLOUDFLARE_API_TOKEN=xxx -e CLOUDFLARE_ACCOUNT_ID=yyy \
+  surge-rule-studio wrangler deploy --config dist/server/wrangler.json
 ```
 
-覆盖率阈值：statements/branches/functions/lines 均 ≥ 95%。
+## Deployment
 
-## 技术栈
+### Cloudflare Workers (recommended)
 
-- Next.js + React + TypeScript
-- Vitest + @testing-library/react
-- Cloudflare Workers (部署目标)
-- DNS-over-HTTPS (连通性检测)
+1. Set CI/CD variables in GitLab → Settings → CI/CD → Variables:
+   - `CLOUDFLARE_API_TOKEN` — Your Cloudflare API token
+   - `CLOUDFLARE_ACCOUNT_ID` — Your Cloudflare account ID
+2. Push to `main` branch
+3. Go to CI/CD → Pipelines → Run the `deploy` job manually
+
+### GitLab CI/CD
+
+The `.gitlab-ci.yml` defines two stages:
+- **test** — Runs on every push and merge request
+- **deploy** — Manual trigger on `main` branch, deploys to Cloudflare Workers
+
+### GitHub + Cloudflare Pages (mirror)
+
+1. Add GitHub as a push mirror in GitLab → Settings → Repository → Mirrors
+2. Connect the GitHub repo to Cloudflare Pages
+3. Set build command: `npm run build`, output directory: `dist/client`
+
+## Testing
+
+```bash
+npm run test            # Run tests with coverage
+npm run test:watch      # Watch mode
+npm run test:e2e        # Playwright E2E tests
+```
+
+Coverage thresholds (enforced): statements/branches/functions/lines ≥ 95%.
+
+## Project Structure
+
+```
+├── app/                    # Next.js App Router
+│   ├── api/                # API routes
+│   │   ├── analyze/        # Domain analysis endpoint
+│   │   ├── connectivity/   # DNS connectivity check
+│   │   └── github/         # GitHub upload endpoint
+│   └── components/
+│       └── RuleWorkbench.tsx   # Main UI component
+├── src/lib/
+│   ├── surge.ts            # Domain extraction, classification, rule generation
+│   ├── connectivity.ts     # DNS-over-HTTPS + Chinese IP detection
+│   ├── probe.ts            # URL analysis orchestrator
+│   └── github.ts           # GitHub Contents API client
+├── worker/
+│   └── index.ts            # Cloudflare Worker entry point
+├── tests/                  # Test files
+├── Dockerfile
+├── .gitlab-ci.yml
+└── vitest.config.ts
+```
+
+## License
+
+Private project.

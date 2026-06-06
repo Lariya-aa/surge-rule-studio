@@ -1,0 +1,13 @@
+node_modules
+.next
+coverage
+dist
+.git
+*.md
+.env*
+.wrangler
+.vinext
+.DS_Store
+tests
+vitest.config.ts
+playwright.config.ts

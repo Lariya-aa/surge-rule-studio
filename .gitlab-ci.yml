@@ -1,0 +1,43 @@
+stages:
+  - test
+  - deploy
+
+variables:
+  NODE_VERSION: "22"
+
+# ── Test stage ──────────────────────────────────────────────
+test:
+  stage: test
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - npm ci --prefer-offline
+    - npm run test
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ── Deploy to Cloudflare Workers ────────────────────────────
+deploy:
+  stage: deploy
+  image: node:${NODE_VERSION}-alpine
+  script:
+    - npm ci --prefer-offline
+    - npm run build
+    - npx wrangler deploy --config dist/server/wrangler.json
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+  variables:
+    CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID}
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+  environment:
+    name: production
+    url: https://surge-rule-studio.${CLOUDFLARE_ACCOUNT_ID}.workers.dev
