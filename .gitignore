@@ -41,3 +41,10 @@ next-env.d.ts
 
 # vinext local cache
 /.vinext/
+.openai/
+dist/
+coverage/
+.vinext/
+.wrangler/
+.claude/
+tsconfig.tsbuildinfo
