@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Globe2,
   Loader2,
+  Search,
   RadioTower,
   ShieldAlert,
   UploadCloud,
@@ -18,9 +19,11 @@ import { useMemo, useState } from "react";
 import { developerLinks } from "@/src/config/developerLinks";
 import type { ConnectivityResult, ConnectivityStatus } from "@/src/lib/connectivity";
 import {
+  baseDomain,
   buildSurgeList,
   CATEGORY_LABELS,
   consolidateDomains,
+  hostFromUrl,
   normalizeInputUrl,
   parseSurgeList,
   type ClassifiedDomain,
@@ -116,6 +119,8 @@ export default function RuleWorkbench() {
   const [surgeDraft, setSurgeDraft] = useState("");
   const [surgeEdited, setSurgeEdited] = useState(false);
   const [connectivityMap, setConnectivityMap] = useState<Map<string, ConnectivityResult>>(new Map());
+  const [connectivityFilter, setConnectivityFilter] = useState<"all" | ConnectivityStatus>("all");
+  const [domainSearch, setDomainSearch] = useState("");
   const [githubForm, setGithubForm] = useState({
     owner: "",
     repo: "",
@@ -184,6 +189,14 @@ export default function RuleWorkbench() {
     return consolidateDomains(domains);
   }, [domains]);
 
+  const inputBaseDomain = useMemo(() => {
+    try {
+      return baseDomain(hostFromUrl(normalizeInputUrl(url)));
+    } catch {
+      return "";
+    }
+  }, [url]);
+
   const groupedByCategory = useMemo(() => {
     const groups: Record<RuleCategory, DomainGroup[]> = {
       "direct-cn": [],
@@ -193,10 +206,24 @@ export default function RuleWorkbench() {
       "ad-tracking": [],
     };
     for (const group of grouped) {
+      // Apply connectivity filter
+      if (connectivityFilter !== "all") {
+        const hasMatch = group.domains.some((d) => {
+          const conn = connectivityMap.get(d.host);
+          return conn?.status === connectivityFilter;
+        });
+        if (!hasMatch) continue;
+      }
+      // Apply domain search filter
+      if (domainSearch) {
+        const q = domainSearch.toLowerCase();
+        const matchesSearch = group.domains.some((d) => d.host.toLowerCase().includes(q));
+        if (!matchesSearch) continue;
+      }
       groups[group.category].push(group);
     }
     return groups;
-  }, [grouped]);
+  }, [grouped, connectivityFilter, connectivityMap, domainSearch]);
 
   async function handleAnalyze() {
     setIsAnalyzing(true);
@@ -541,11 +568,39 @@ export default function RuleWorkbench() {
 
       <section className="mx-auto grid max-w-7xl gap-6 px-5 py-7 xl:grid-cols-[minmax(0,1fr)_520px]">
         <div className="space-y-5">
+          {domains.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-[#cbd4c6] bg-white px-4 py-3">
+              <div className="relative flex-1 min-w-[180px]">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#68746d]" size={16} />
+                <input
+                  className="h-9 w-full rounded-md border border-[#bfcab9] pl-9 pr-3 text-sm outline-none focus:border-[#173b35]"
+                  onChange={(e) => setDomainSearch(e.target.value)}
+                  placeholder="搜索域名..."
+                  title="搜索域名"
+                  value={domainSearch}
+                />
+              </div>
+              <div className="flex gap-1.5">
+                {([["all", "全部"], ["direct", "🟢 直连"], ["likely-direct", "🟡 可能直连"], ["likely-proxy", "🔴 可能需代理"], ["proxy", "🔴 需代理"], ["unknown", "⚪ 未知"]] as const).map(([value, label]) => (
+                  <button
+                    className={`h-8 rounded-md border px-2.5 text-xs font-medium ${connectivityFilter === value ? "border-[#173b35] bg-[#173b35] text-white" : "border-[#cbd4c6] bg-white text-[#26312b] hover:border-[#173b35]"}`}
+                    onClick={() => setConnectivityFilter(value)}
+                    key={value}
+                    title={`筛选${label}`}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {categoryOrder.map((category) => (
             <DomainGroupSection
               category={category}
               connectivityMap={connectivityMap}
               groups={groupedByCategory[category]}
+              inputBaseDomain={inputBaseDomain}
               key={category}
               onUpdate={updateDomain}
             />
@@ -622,11 +677,13 @@ function DomainGroupSection({
   category,
   connectivityMap,
   groups,
+  inputBaseDomain,
   onUpdate,
 }: {
   category: RuleCategory;
   connectivityMap: Map<string, ConnectivityResult>;
   groups: DomainGroup[];
+  inputBaseDomain: string;
   onUpdate: (host: string, patch: Partial<ClassifiedDomain>) => void;
 }) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -661,15 +718,16 @@ function DomainGroupSection({
       ) : (
         <div className="divide-y divide-[#edf0ea]">
           {groups.map((group) => {
-            const isExpanded = expandedGroups.has(group.baseDomain);
+            const isExpanded = expandedGroups.has(group.baseDomain) || group.baseDomain === inputBaseDomain;
             const isSingleDomain = group.domains.length === 1;
             const allSelected = group.domains.every((d) => d.selected);
             const someSelected = group.domains.some((d) => d.selected) && !allSelected;
+            const isInputGroup = group.baseDomain === inputBaseDomain;
 
             if (isSingleDomain) {
               const domain = group.domains[0];
               return (
-                <div className="grid gap-3 px-4 py-3 md:grid-cols-[32px_minmax(0,1fr)_190px]" key={group.baseDomain}>
+                <div className={`grid gap-3 px-4 py-3 md:grid-cols-[32px_minmax(0,1fr)_190px] ${isInputGroup ? "border-l-4 border-l-[#173b35] bg-[#f0f7f0]" : ""}`} key={group.baseDomain}>
                   <input
                     aria-label={`Select ${domain.host}`}
                     checked={domain.selected}
@@ -680,6 +738,11 @@ function DomainGroupSection({
                   <div className="min-w-0">
                     <div className="break-all font-mono text-sm font-semibold">
                       {domain.host}
+                      {isInputGroup && (
+                        <span className="ml-2 rounded-md bg-[#173b35] px-2 py-0.5 text-xs text-white align-middle">
+                          🎯 输入域名
+                        </span>
+                      )}
                       {connectivityMap.size > 0 && (() => {
                         const conn = connectivityMap.get(domain.host);
                         const badge = connectivityBadge(conn?.status);
@@ -706,8 +769,8 @@ function DomainGroupSection({
             }
 
             return (
-              <div key={group.baseDomain}>
-                <div className="flex items-center gap-3 bg-[#f8f9f5] px-4 py-3">
+              <div className={isInputGroup ? "border-l-4 border-l-[#173b35] bg-[#f0f7f0]" : ""} key={group.baseDomain}>
+                <div className={`flex items-center gap-3 px-4 py-3 ${isInputGroup ? "bg-[#e8f5e8]" : "bg-[#f8f9f5]"}`}>
                   <input
                     aria-label={`Select all ${group.baseDomain}`}
                     checked={allSelected}
@@ -722,6 +785,11 @@ function DomainGroupSection({
                     type="button"
                   >
                     <span className="font-mono text-sm font-semibold">{group.baseDomain}</span>
+                    {isInputGroup && (
+                      <span className="rounded-md bg-[#173b35] px-2 py-0.5 text-xs text-white">
+                        🎯 输入域名
+                      </span>
+                    )}
                     <span className="rounded-md bg-[#eef4e8] px-2 py-0.5 text-xs text-[#26312b]">
                       {group.domains.length} 子域名
                     </span>

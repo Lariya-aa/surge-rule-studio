@@ -965,6 +965,206 @@ describe("RuleWorkbench", () => {
   });
 });
 
+describe("connectivity filter and search", () => {
+  it("filters domains by connectivity status", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/analyze") {
+        return new Response(
+          JSON.stringify({
+            inputUrl: "https://example.com/",
+            finalUrl: "https://example.com/",
+            workerReachable: true,
+            statusCode: 200,
+            fetchError: "",
+            evidenceStatus: "UNKNOWN",
+            blockedHosts: [],
+            stats: { discoveredHosts: 2, surgeEvidenceHosts: 0 },
+            hosts: [
+              { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+              { host: "baidu.com", category: "direct-cn", rule: "DOMAIN,baidu.com", reasons: ["cn"], score: 78, selected: true, evidence: "UNKNOWN", confidence: "noise" },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/connectivity") {
+        return new Response(
+          JSON.stringify({
+            results: [
+              { host: "example.com", status: "likely-proxy", reason: "Resolved to 93.184.216.34", resolvedIps: ["93.184.216.34"], isChinaIp: false },
+              { host: "baidu.com", status: "likely-direct", reason: "Resolved to 114.64.1.1", resolvedIps: ["114.64.1.1"], isChinaIp: true },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<RuleWorkbench />);
+    await user.clear(screen.getByLabelText("目标链接"));
+    await user.type(screen.getByLabelText("目标链接"), "https://example.com/");
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await screen.findByText("example.com");
+
+    // Wait for connectivity data
+    await waitFor(() => {
+      expect(screen.getByTitle("Resolved to 93.184.216.34")).toBeInTheDocument();
+    });
+
+    // Filter to "likely-proxy" only
+    await user.click(screen.getByTitle("筛选🔴 可能需代理"));
+    expect(screen.queryByText("baidu.com")).not.toBeInTheDocument();
+    expect(screen.getByText("example.com")).toBeInTheDocument();
+
+    // Filter to "likely-direct" only
+    await user.click(screen.getByTitle("筛选🟡 可能直连"));
+    expect(screen.getByText("baidu.com")).toBeInTheDocument();
+    expect(screen.queryByText("example.com")).not.toBeInTheDocument();
+
+    // Show all
+    await user.click(screen.getByTitle("筛选全部"));
+    expect(screen.getByText("example.com")).toBeInTheDocument();
+    expect(screen.getByText("baidu.com")).toBeInTheDocument();
+  }, 15_000);
+
+  it("searches domains by name", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://example.com/",
+              finalUrl: "https://example.com/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 2, surgeEvidenceHosts: 0 },
+              hosts: [
+                { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+                { host: "baidu.com", category: "direct-cn", rule: "DOMAIN,baidu.com", reasons: ["cn"], score: 78, selected: true, evidence: "UNKNOWN", confidence: "noise" },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.clear(screen.getByLabelText("目标链接"));
+    await user.type(screen.getByLabelText("目标链接"), "https://example.com/");
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await screen.findByText("example.com");
+
+    // Search for "baidu"
+    await user.type(screen.getByTitle("搜索域名"), "baidu");
+    expect(screen.getByText("baidu.com")).toBeInTheDocument();
+    expect(screen.queryByText("example.com")).not.toBeInTheDocument();
+
+    // Clear search
+    await user.clear(screen.getByTitle("搜索域名"));
+    expect(screen.getByText("example.com")).toBeInTheDocument();
+    expect(screen.getByText("baidu.com")).toBeInTheDocument();
+  }, 10_000);
+
+  it("highlights input domain group with special badge", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://example.com/",
+              finalUrl: "https://example.com/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 3, surgeEvidenceHosts: 0 },
+              hosts: [
+                { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+                { host: "api.example.com", category: "proxy-global", rule: "DOMAIN-SUFFIX,example.com", reasons: ["sub"], score: 85, selected: true, evidence: "UNKNOWN", confidence: "target" },
+                { host: "other.com", category: "direct-cn", rule: "DOMAIN,other.com", reasons: ["cn"], score: 78, selected: true, evidence: "UNKNOWN", confidence: "noise" },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.clear(screen.getByLabelText("目标链接"));
+    await user.type(screen.getByLabelText("目标链接"), "https://example.com/");
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await waitFor(() => {
+      expect(screen.getByText("other.com")).toBeInTheDocument();
+    });
+
+    // Input domain group should have the badge
+    await waitFor(() => {
+      expect(screen.getAllByText(/输入域名/).length).toBeGreaterThan(0);
+    });
+
+    // The input domain group should be auto-expanded (has subdomains)
+    expect(screen.getByText("api.example.com")).toBeInTheDocument();
+  }, 10_000);
+
+  it("shows input domain badge for single-domain group", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://example.com/",
+              finalUrl: "https://example.com/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 1, surgeEvidenceHosts: 0 },
+              hosts: [
+                { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.clear(screen.getByLabelText("目标链接"));
+    await user.type(screen.getByLabelText("目标链接"), "https://example.com/");
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await screen.findByText("example.com");
+
+    // Single domain input group should show badge
+    await waitFor(() => {
+      expect(screen.getAllByText(/输入域名/).length).toBeGreaterThan(0);
+    });
+  }, 10_000);
+});
+
 describe("connectivityBadge", () => {
   it("returns correct badge for each status", () => {
     expect(connectivityBadge(undefined)).toEqual({ emoji: "⚪", label: "未知" });
