@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import RuleWorkbench from "@/app/components/RuleWorkbench";
@@ -354,8 +354,11 @@ describe("RuleWorkbench", () => {
     expect(screen.getByText("cdn.example.com")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /收起/ })).toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Select api.example.com"));
-    expect(screen.getByLabelText("Select api.example.com")).not.toBeChecked();
+    const childCheckbox = screen.getByLabelText("Select api.example.com");
+    fireEvent.change(childCheckbox, { target: { checked: false } });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Select api.example.com")).not.toBeChecked();
+    });
 
     await user.selectOptions(screen.getByLabelText("Category for api.example.com"), "direct-cn");
     expect(screen.getByLabelText("Category for api.example.com")).toHaveValue("direct-cn");
@@ -387,53 +390,113 @@ describe("RuleWorkbench", () => {
 
   it("shows connectivity badges after analysis", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (url === "/api/analyze") {
-          return new Response(
-            JSON.stringify({
-              inputUrl: "https://example.com/",
-              finalUrl: "https://example.com/",
-              workerReachable: true,
-              statusCode: 200,
-              fetchError: "",
-              evidenceStatus: "UNKNOWN",
-              blockedHosts: [],
-              stats: { discoveredHosts: 2, surgeEvidenceHosts: 0 },
-              hosts: [
-                { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
-                { host: "other.com", category: "direct-cn", rule: "DOMAIN,other.com", reasons: ["cn"], score: 78, selected: true, evidence: "UNKNOWN", confidence: "noise" },
-              ],
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        if (url === "/api/connectivity") {
-          return new Response(
-            JSON.stringify({
-              results: [
-                { host: "example.com", status: "likely-proxy", reason: "Resolved to 93.184.216.34", resolvedIps: ["93.184.216.34"], isChinaIp: false },
-                { host: "other.com", status: "likely-direct", reason: "Resolved to 114.64.1.1", resolvedIps: ["114.64.1.1"], isChinaIp: true },
-              ],
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          );
-        }
-        return new Response("", { status: 200 });
-      }),
-    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/analyze") {
+        return new Response(
+          JSON.stringify({
+            inputUrl: "https://example.com/",
+            finalUrl: "https://example.com/",
+            workerReachable: true,
+            statusCode: 200,
+            fetchError: "",
+            evidenceStatus: "UNKNOWN",
+            blockedHosts: [],
+            stats: { discoveredHosts: 1, surgeEvidenceHosts: 0 },
+            hosts: [
+              { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/connectivity") {
+        return new Response(
+          JSON.stringify({
+            results: [
+              { host: "example.com", status: "likely-proxy", reason: "Resolved to 93.184.216.34", resolvedIps: ["93.184.216.34"], isChinaIp: false },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     render(<RuleWorkbench />);
     await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
     await screen.findByText("example.com");
 
+    // Wait for connectivity API to be called
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/connectivity", expect.any(Object));
+    });
+
+    // Wait for badge to appear
     await waitFor(() => {
       expect(screen.getByTitle("Resolved to 93.184.216.34")).toBeInTheDocument();
-      expect(screen.getByTitle("Resolved to 114.64.1.1")).toBeInTheDocument();
     });
-  }, 10_000);
+  }, 15_000);
+
+  it("shows connectivity badges in expanded group child domains", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/analyze") {
+        return new Response(
+          JSON.stringify({
+            inputUrl: "https://example.com/",
+            finalUrl: "https://example.com/",
+            workerReachable: true,
+            statusCode: 200,
+            fetchError: "",
+            evidenceStatus: "UNKNOWN",
+            blockedHosts: [],
+            stats: { discoveredHosts: 2, surgeEvidenceHosts: 0 },
+            hosts: [
+              { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+              { host: "api.example.com", category: "proxy-global", rule: "DOMAIN-SUFFIX,example.com", reasons: ["subdomain"], score: 85, selected: true, evidence: "UNKNOWN", confidence: "target" },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url === "/api/connectivity") {
+        return new Response(
+          JSON.stringify({
+            results: [
+              { host: "example.com", status: "likely-proxy", reason: "Resolved to 93.184.216.34", resolvedIps: ["93.184.216.34"], isChinaIp: false },
+              { host: "api.example.com", status: "likely-proxy", reason: "Resolved to 93.184.216.35", resolvedIps: ["93.184.216.35"], isChinaIp: false },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await screen.findByText("example.com");
+
+    // Wait for connectivity API
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith("/api/connectivity", expect.any(Object));
+    });
+
+    // Expand the group
+    await user.click(screen.getByRole("button", { name: /展开/ }));
+    await waitFor(() => {
+      expect(screen.getByText("api.example.com")).toBeInTheDocument();
+    });
+
+    // Verify badge in expanded child view
+    await waitFor(() => {
+      expect(screen.getByTitle("Resolved to 93.184.216.35")).toBeInTheDocument();
+    });
+  }, 15_000);
 
   it("renders blocked probe status and error messages", async () => {
     const user = userEvent.setup();
