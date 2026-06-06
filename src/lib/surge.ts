@@ -35,6 +35,13 @@ export interface SurgeList {
   text: string;
 }
 
+export interface DomainGroup {
+  baseDomain: string;
+  category: RuleCategory;
+  domains: ClassifiedDomain[];
+  parentDomain?: ClassifiedDomain;
+}
+
 export const CATEGORY_LABELS: Record<RuleCategory, string> = {
   "direct-cn": "国内直连",
   "proxy-global": "国外规则",
@@ -682,6 +689,40 @@ export function classifyDomains(
     const byCategory = CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category);
     return byCategory || sortHosts(a.host, b.host);
   });
+}
+
+export function consolidateDomains(domains: ClassifiedDomain[]): DomainGroup[] {
+  const groupMap = new Map<string, DomainGroup>();
+
+  for (const domain of domains) {
+    const base = baseDomain(domain.host);
+    const key = `${domain.category}::${base}`;
+    let group = groupMap.get(key);
+    if (!group) {
+      group = { baseDomain: base, category: domain.category, domains: [] };
+      groupMap.set(key, group);
+    }
+    group.domains.push(domain);
+    if (domain.host === base) {
+      group.parentDomain = domain;
+    }
+  }
+
+  const groups = Array.from(groupMap.values());
+  groups.sort((a, b) => {
+    const byCategory = CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category);
+    return byCategory || sortHosts(a.baseDomain, b.baseDomain);
+  });
+
+  for (const group of groups) {
+    group.domains.sort((a, b) => {
+      if (a.host === group.baseDomain) return -1;
+      if (b.host === group.baseDomain) return 1;
+      return sortHosts(a.host, b.host);
+    });
+  }
+
+  return groups;
 }
 
 export function scoreHostConfidence(host: string, inputHost: string): number {

@@ -16,12 +16,15 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { developerLinks } from "@/src/config/developerLinks";
+import type { ConnectivityResult, ConnectivityStatus } from "@/src/lib/connectivity";
 import {
   buildSurgeList,
   CATEGORY_LABELS,
+  consolidateDomains,
   normalizeInputUrl,
   parseSurgeList,
   type ClassifiedDomain,
+  type DomainGroup,
   type EvidenceStatus,
   type RuleCategory,
   type RuleMode,
@@ -64,7 +67,7 @@ const categoryTone: Record<RuleCategory, string> = {
   "ad-tracking": "border-zinc-300 bg-zinc-100 text-zinc-900",
 };
 
-const purposeTags = [
+const builtInTags = [
   { label: "AI", path: "rules/AI.list" },
   { label: "Google", path: "rules/Google.list" },
   { label: "YouTube", path: "rules/YouTube.list" },
@@ -77,8 +80,9 @@ const purposeTags = [
   { label: "Podcast", path: "rules/Podcast.list" },
   { label: "Ads", path: "rules/Ads.list" },
   { label: "Privacy", path: "rules/Privacy.list" },
-  { label: "Custom", path: "rules/Custom.list" },
 ];
+
+const CUSTOM_TAGS_KEY = "surge-studio-custom-tags";
 
 export default function RuleWorkbench() {
   const [url, setUrl] = useState("https://linux.do/");
@@ -94,13 +98,24 @@ export default function RuleWorkbench() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState("");
   const [activeTag, setActiveTag] = useState("AI");
-  const [customTag, setCustomTag] = useState("Custom");
+  const [customTags, setCustomTags] = useState<Array<{ label: string; path: string }>>(() => {
+    try {
+      const stored = localStorage.getItem(CUSTOM_TAGS_KEY);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showAddTag, setShowAddTag] = useState(false);
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagPath, setNewTagPath] = useState("");
   const [tagBuckets, setTagBuckets] = useState<Record<string, string[]>>({});
   const [tagSources, setTagSources] = useState<Record<string, string>>({});
   const [analysisTag, setAnalysisTag] = useState("");
   const [pathLocked, setPathLocked] = useState(false);
   const [surgeDraft, setSurgeDraft] = useState("");
   const [surgeEdited, setSurgeEdited] = useState(false);
+  const [connectivityMap, setConnectivityMap] = useState<Map<string, ConnectivityResult>>(new Map());
   const [githubForm, setGithubForm] = useState({
     owner: "",
     repo: "",
@@ -111,7 +126,41 @@ export default function RuleWorkbench() {
   });
   const [uploadStatus, setUploadStatus] = useState("");
 
-  const activeTagKey = activeTag === "Custom" ? customTag.trim() || "Custom" : activeTag;
+  function saveCustomTags(tags: Array<{ label: string; path: string }>) {
+    setCustomTags(tags);
+    try {
+      localStorage.setItem(CUSTOM_TAGS_KEY, JSON.stringify(tags));
+    } catch {
+      // ignore
+    }
+  }
+
+  function addCustomTag() {
+    const label = newTagName.trim();
+    if (!label) return;
+    const path = newTagPath.trim() || `rules/${label.replace(/\s+/g, "-").toLowerCase()}.list`;
+    const exists = [...builtInTags, ...customTags].some((t) => t.label === label);
+    if (exists) return;
+    saveCustomTags([...customTags, { label, path }]);
+    setActiveTag(label);
+    setShowAddTag(false);
+    setNewTagName("");
+    setNewTagPath("");
+    if (!pathLocked) {
+      setGithubForm((current) => ({ ...current, path }));
+    }
+  }
+
+  function removeCustomTag(label: string) {
+    const next = customTags.filter((t) => t.label !== label);
+    saveCustomTags(next);
+    if (activeTag === label) {
+      setActiveTag("AI");
+    }
+  }
+
+  const allTags = [...builtInTags, ...customTags];
+  const activeTagKey = activeTag;
 
   const generatedSurgeList = useMemo(() => {
     const bucketRules = tagBuckets[activeTagKey] || [];
@@ -131,18 +180,22 @@ export default function RuleWorkbench() {
   const surgeText = surgeEdited ? surgeDraft : generatedSurgeList;
 
   const grouped = useMemo(() => {
-    const groups: Record<RuleCategory, ClassifiedDomain[]> = {
+    return consolidateDomains(domains);
+  }, [domains]);
+
+  const groupedByCategory = useMemo(() => {
+    const groups: Record<RuleCategory, DomainGroup[]> = {
       "direct-cn": [],
       "proxy-global": [],
       "region-sensitive": [],
       blocked: [],
       "ad-tracking": [],
     };
-    for (const domain of domains) {
-      groups[domain.category].push(domain);
+    for (const group of grouped) {
+      groups[group.category].push(group);
     }
     return groups;
-  }, [domains]);
+  }, [grouped]);
 
   async function handleAnalyze() {
     setIsAnalyzing(true);
@@ -175,6 +228,23 @@ export default function RuleWorkbench() {
       }));
       setTagSources((current) => ({ ...current, [activeTagKey]: payload.inputUrl }));
       setSurgeEdited(false);
+
+      // Fire connectivity check in background (don't block UI)
+      const hosts = payload.hosts.map((h) => h.host);
+      fetch("/api/connectivity", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hosts }),
+      })
+        .then((r) => r.json() as Promise<{ results: ConnectivityResult[] }>)
+        .then((data) => {
+          const map = new Map<string, ConnectivityResult>();
+          for (const result of data.results) {
+            map.set(result.host, result);
+          }
+          setConnectivityMap(map);
+        })
+        .catch(() => undefined);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Analyze request failed");
     } finally {
@@ -344,29 +414,73 @@ export default function RuleWorkbench() {
                 <span className="rounded-md bg-[#eef4e8] px-2 py-1 text-xs text-[#26312b]">{activeTagKey}</span>
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                {purposeTags.map((tag) => (
+                {allTags.map((tag) => {
+                  const isCustom = customTags.some((t) => t.label === tag.label);
+                  return (
+                    <span className="inline-flex items-center" key={tag.label}>
+                      <button
+                        className={`h-8 rounded-l-md border px-3 text-xs font-semibold ${activeTag === tag.label ? "border-[#173b35] bg-[#173b35] text-white" : "border-[#cbd4c6] bg-white text-[#26312b]"}`}
+                        onClick={() => handleTagClick(tag.label, tag.path)}
+                        type="button"
+                      >
+                        {tag.label}
+                      </button>
+                      {isCustom && (
+                        <button
+                          className={`h-8 rounded-r-md border border-l-0 px-1.5 text-xs ${activeTag === tag.label ? "border-[#173b35] bg-[#173b35] text-white/70 hover:text-white" : "border-[#cbd4c6] bg-white text-[#68746d] hover:text-rose-600"}`}
+                          onClick={() => removeCustomTag(tag.label)}
+                          title={`删除标签 "${tag.label}"`}
+                          type="button"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  );
+                })}
+                <button
+                  className="h-8 rounded-md border border-dashed border-[#97a89a] px-3 text-xs font-semibold text-[#5b645d] hover:border-[#173b35] hover:text-[#173b35]"
+                  onClick={() => setShowAddTag(true)}
+                  title="添加自定义标签"
+                  type="button"
+                >
+                  +
+                </button>
+              </div>
+              {showAddTag ? (
+                <div className="mt-3 flex gap-2">
+                  <input
+                    className="h-9 flex-1 rounded-md border border-[#bfcab9] px-3 text-sm outline-none focus:border-[#173b35]"
+                    onChange={(event) => {
+                      setNewTagName(event.target.value);
+                      if (!newTagPath || newTagPath === `rules/${newTagName.replace(/\s+/g, "-").toLowerCase()}.list`) {
+                        setNewTagPath(`rules/${event.target.value.replace(/\s+/g, "-").toLowerCase()}.list`);
+                      }
+                    }}
+                    placeholder="标签名称"
+                    value={newTagName}
+                  />
+                  <input
+                    className="h-9 flex-1 rounded-md border border-[#bfcab9] px-3 text-sm outline-none focus:border-[#173b35]"
+                    onChange={(event) => setNewTagPath(event.target.value)}
+                    placeholder="rules/Tag.list"
+                    value={newTagPath}
+                  />
                   <button
-                    className={`h-8 rounded-md border px-3 text-xs font-semibold ${activeTag === tag.label ? "border-[#173b35] bg-[#173b35] text-white" : "border-[#cbd4c6] bg-white text-[#26312b]"}`}
-                    key={tag.label}
-                    onClick={() => handleTagClick(tag.label, tag.path)}
+                    className="h-9 rounded-md bg-[#173b35] px-3 text-xs font-semibold text-white"
+                    onClick={addCustomTag}
                     type="button"
                   >
-                    {tag.label}
+                    保存
                   </button>
-                ))}
-              </div>
-              {activeTag === "Custom" ? (
-                <label className="mt-3 block">
-                  <span className="mb-1 block text-xs font-medium">自定义标签</span>
-                  <input
-                    className="h-9 w-full rounded-md border border-[#bfcab9] px-3 text-sm outline-none focus:border-[#173b35]"
-                    onChange={(event) => {
-                      setCustomTag(event.target.value);
-                      setSurgeEdited(false);
-                    }}
-                    value={customTag}
-                  />
-                </label>
+                  <button
+                    className="h-9 rounded-md border border-[#bfcab9] px-3 text-xs font-semibold text-[#26312b]"
+                    onClick={() => { setShowAddTag(false); setNewTagName(""); setNewTagPath(""); }}
+                    type="button"
+                  >
+                    取消
+                  </button>
+                </div>
               ) : null}
             </div>
           </div>
@@ -409,7 +523,7 @@ export default function RuleWorkbench() {
             {categoryOrder.map((category) => (
               <div className={`rounded-md border p-4 ${categoryTone[category]}`} key={category}>
                 <div className="text-sm font-semibold">{CATEGORY_LABELS[category]}</div>
-                <div className="mt-3 text-3xl font-semibold">{grouped[category].length}</div>
+                <div className="mt-3 text-3xl font-semibold">{groupedByCategory[category].reduce((sum, g) => sum + g.domains.length, 0)}</div>
               </div>
             ))}
           </div>
@@ -419,9 +533,10 @@ export default function RuleWorkbench() {
       <section className="mx-auto grid max-w-7xl gap-6 px-5 py-7 xl:grid-cols-[minmax(0,1fr)_520px]">
         <div className="space-y-5">
           {categoryOrder.map((category) => (
-            <DomainGroup
+            <DomainGroupSection
               category={category}
-              domains={grouped[category]}
+              connectivityMap={connectivityMap}
+              groups={groupedByCategory[category]}
               key={category}
               onUpdate={updateDomain}
             />
@@ -494,52 +609,158 @@ export default function RuleWorkbench() {
   );
 }
 
-function DomainGroup({
+function DomainGroupSection({
   category,
-  domains,
+  connectivityMap,
+  groups,
   onUpdate,
 }: {
   category: RuleCategory;
-  domains: ClassifiedDomain[];
+  connectivityMap: Map<string, ConnectivityResult>;
+  groups: DomainGroup[];
   onUpdate: (host: string, patch: Partial<ClassifiedDomain>) => void;
 }) {
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const totalDomains = groups.reduce((sum, g) => sum + g.domains.length, 0);
+
+  function toggleGroup(baseDomain: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(baseDomain)) {
+        next.delete(baseDomain);
+      } else {
+        next.add(baseDomain);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllInGroup(group: DomainGroup, selected: boolean) {
+    for (const domain of group.domains) {
+      onUpdate(domain.host, { selected });
+    }
+  }
+
   return (
     <section className="rounded-md border border-[#cbd4c6] bg-white">
       <div className={`flex items-center justify-between border-b px-4 py-3 ${categoryTone[category]}`}>
         <h2 className="font-semibold">{CATEGORY_LABELS[category]}</h2>
-        <span className="text-sm">{domains.length} hosts</span>
+        <span className="text-sm">{totalDomains} hosts</span>
       </div>
-      {domains.length === 0 ? (
+      {groups.length === 0 ? (
         <p className="px-4 py-5 text-sm text-[#68746d]">暂无域名。运行判断或粘贴 Surge dump/log 后会显示。</p>
       ) : (
         <div className="divide-y divide-[#edf0ea]">
-          {domains.map((domain) => (
-            <div className="grid gap-3 px-4 py-3 md:grid-cols-[32px_minmax(0,1fr)_190px]" key={domain.host}>
-              <input
-                aria-label={`Select ${domain.host}`}
-                checked={domain.selected}
-                className="mt-1 h-5 w-5"
-                onChange={(event) => onUpdate(domain.host, { selected: event.target.checked })}
-                type="checkbox"
-              />
-              <div className="min-w-0">
-                <div className="break-all font-mono text-sm font-semibold">{domain.host}</div>
-                <div className="mt-1 text-xs leading-5 text-[#68746d]">{domain.reasons.join("; ")}</div>
+          {groups.map((group) => {
+            const isExpanded = expandedGroups.has(group.baseDomain);
+            const isSingleDomain = group.domains.length === 1;
+            const allSelected = group.domains.every((d) => d.selected);
+            const someSelected = group.domains.some((d) => d.selected) && !allSelected;
+
+            if (isSingleDomain) {
+              const domain = group.domains[0];
+              return (
+                <div className="grid gap-3 px-4 py-3 md:grid-cols-[32px_minmax(0,1fr)_190px]" key={group.baseDomain}>
+                  <input
+                    aria-label={`Select ${domain.host}`}
+                    checked={domain.selected}
+                    className="mt-1 h-5 w-5"
+                    onChange={(event) => onUpdate(domain.host, { selected: event.target.checked })}
+                    type="checkbox"
+                  />
+                  <div className="min-w-0">
+                    <div className="break-all font-mono text-sm font-semibold">
+                      {domain.host}
+                      {connectivityMap.size > 0 && (() => {
+                        const conn = connectivityMap.get(domain.host);
+                        const badge = connectivityBadge(conn?.status);
+                        return <span className="ml-2 text-xs" title={conn?.reason || badge.label}>{badge.emoji}</span>;
+                      })()}
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-[#68746d]">{domain.reasons.join("; ")}</div>
+                  </div>
+                  <select
+                    aria-label={`Category for ${domain.host}`}
+                    className="h-10 rounded-md border border-[#bfcab9] bg-white px-2 text-sm"
+                    onChange={(event) => onUpdate(domain.host, { category: event.target.value as RuleCategory })}
+                    value={domain.category}
+                  >
+                    {categoryOrder.map((item) => (
+                      <option key={item} value={item}>
+                        {CATEGORY_LABELS[item]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              );
+            }
+
+            return (
+              <div key={group.baseDomain}>
+                <div className="flex items-center gap-3 bg-[#f8f9f5] px-4 py-3">
+                  <input
+                    aria-label={`Select all ${group.baseDomain}`}
+                    checked={allSelected}
+                    className="h-5 w-5"
+                    onChange={(event) => toggleAllInGroup(group, event.target.checked)}
+                    ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                    type="checkbox"
+                  />
+                  <button
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    onClick={() => toggleGroup(group.baseDomain)}
+                    type="button"
+                  >
+                    <span className="font-mono text-sm font-semibold">{group.baseDomain}</span>
+                    <span className="rounded-md bg-[#eef4e8] px-2 py-0.5 text-xs text-[#26312b]">
+                      {group.domains.length} 子域名
+                    </span>
+                    <span className="ml-auto text-xs text-[#68746d]">
+                      {isExpanded ? "收起" : "展开"}
+                    </span>
+                  </button>
+                </div>
+                {isExpanded && (
+                  <div className="divide-y divide-[#edf0ea] border-t border-[#edf0ea]">
+                    {group.domains.map((domain) => (
+                      <div className="grid gap-3 pl-10 pr-4 py-2 md:grid-cols-[32px_minmax(0,1fr)_190px]" key={domain.host}>
+                        <input
+                          aria-label={`Select ${domain.host}`}
+                          checked={domain.selected}
+                          className="mt-1 h-5 w-5"
+                          onChange={(event) => onUpdate(domain.host, { selected: event.target.checked })}
+                          type="checkbox"
+                        />
+                        <div className="min-w-0">
+                          <div className="break-all font-mono text-sm">
+                            {domain.host}
+                            {connectivityMap.size > 0 && (() => {
+                              const conn = connectivityMap.get(domain.host);
+                              const badge = connectivityBadge(conn?.status);
+                              return <span className="ml-2 text-xs" title={conn?.reason || badge.label}>{badge.emoji}</span>;
+                            })()}
+                          </div>
+                          <div className="mt-1 text-xs leading-5 text-[#68746d]">{domain.reasons.join("; ")}</div>
+                        </div>
+                        <select
+                          aria-label={`Category for ${domain.host}`}
+                          className="h-10 rounded-md border border-[#bfcab9] bg-white px-2 text-sm"
+                          onChange={(event) => onUpdate(domain.host, { category: event.target.value as RuleCategory })}
+                          value={domain.category}
+                        >
+                          {categoryOrder.map((item) => (
+                            <option key={item} value={item}>
+                              {CATEGORY_LABELS[item]}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <select
-                aria-label={`Category for ${domain.host}`}
-                className="h-10 rounded-md border border-[#bfcab9] bg-white px-2 text-sm"
-                onChange={(event) => onUpdate(domain.host, { category: event.target.value as RuleCategory })}
-                value={domain.category}
-              >
-                {categoryOrder.map((item) => (
-                  <option key={item} value={item}>
-                    {CATEGORY_LABELS[item]}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -622,6 +843,15 @@ async function probeDirect(rawUrl: string): Promise<BrowserProbe> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function connectivityBadge(status: ConnectivityStatus | undefined): { emoji: string; label: string } {
+  if (!status) return { emoji: "⚪", label: "未知" };
+  if (status === "direct") return { emoji: "🟢", label: "直连" };
+  if (status === "likely-direct") return { emoji: "🟡", label: "可能直连" };
+  if (status === "likely-proxy") return { emoji: "🔴", label: "需代理" };
+  if (status === "proxy") return { emoji: "🔴", label: "需代理" };
+  return { emoji: "⚪", label: "未知" };
 }
 
 function browserStatusText(probe: BrowserProbe): string {

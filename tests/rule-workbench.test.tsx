@@ -2,10 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import RuleWorkbench from "@/app/components/RuleWorkbench";
+import { connectivityBadge } from "@/app/components/RuleWorkbench";
 
 describe("RuleWorkbench", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    try { localStorage.clear(); } catch { /* ignore */ }
   });
 
   it("renders the operational UI and preserves developer link placeholders", () => {
@@ -240,10 +242,10 @@ describe("RuleWorkbench", () => {
     );
 
     render(<RuleWorkbench />);
-    await user.click(screen.getByRole("button", { name: "Custom" }));
-    expect(screen.getByLabelText("Path")).toHaveValue("rules/Custom.list");
-    await user.clear(screen.getByLabelText("自定义标签"));
-    await user.type(screen.getByLabelText("自定义标签"), "Research");
+    await user.click(screen.getByTitle("添加自定义标签"));
+    await user.type(screen.getByPlaceholderText("标签名称"), "Research");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(screen.getByLabelText("Path")).toHaveValue("rules/research.list");
     await user.clear(screen.getByLabelText("目标链接"));
     await user.type(screen.getByLabelText("目标链接"), "https://direct.example/");
     await user.type(screen.getByLabelText("Surge dump/log 输入"), "direct.example DIRECT");
@@ -307,5 +309,232 @@ describe("RuleWorkbench", () => {
     await user.type(screen.getByLabelText("Fine-grained PAT"), "github_pat_12345678901234567890");
     await user.click(screen.getByRole("button", { name: "增量保存 .list" }));
     expect(await screen.findByText("denied")).toBeInTheDocument();
+  });
+
+  it("groups subdomains under base domain with expandable sections", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://example.com/",
+              finalUrl: "https://example.com/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 4, surgeEvidenceHosts: 0 },
+              hosts: [
+                { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+                { host: "api.example.com", category: "proxy-global", rule: "DOMAIN-SUFFIX,example.com", reasons: ["subdomain"], score: 85, selected: true, evidence: "UNKNOWN", confidence: "target" },
+                { host: "cdn.example.com", category: "proxy-global", rule: "DOMAIN-SUFFIX,example.com", reasons: ["subdomain"], score: 85, selected: true, evidence: "UNKNOWN", confidence: "provider" },
+                { host: "other.com", category: "direct-cn", rule: "DOMAIN,other.com", reasons: ["cn"], score: 78, selected: true, evidence: "UNKNOWN", confidence: "noise" },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await screen.findByText("example.com");
+
+    expect(screen.getByText("3 子域名")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /展开/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /展开/ }));
+    expect(screen.getByText("api.example.com")).toBeInTheDocument();
+    expect(screen.getByText("cdn.example.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /收起/ })).toBeInTheDocument();
+
+    await user.click(screen.getByLabelText("Select api.example.com"));
+    expect(screen.getByLabelText("Select api.example.com")).not.toBeChecked();
+
+    await user.selectOptions(screen.getByLabelText("Category for api.example.com"), "direct-cn");
+    expect(screen.getByLabelText("Category for api.example.com")).toHaveValue("direct-cn");
+
+    const selectAll = screen.getByLabelText("Select all example.com");
+    expect(selectAll).toBeInTheDocument();
+
+    await user.click(selectAll);
+    await waitFor(() => {
+      expect(screen.getByLabelText("Category for api.example.com")).toHaveValue("direct-cn");
+    });
+  }, 10_000);
+
+  it("creates and deletes custom tags via [+] button", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByTitle("添加自定义标签"));
+    await user.type(screen.getByPlaceholderText("标签名称"), "MyTag");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(screen.getByRole("button", { name: "MyTag" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Path")).toHaveValue("rules/mytag.list");
+
+    await user.click(screen.getByTitle('删除标签 "MyTag"'));
+    expect(screen.queryByRole("button", { name: "MyTag" })).not.toBeInTheDocument();
+  });
+
+  it("shows connectivity badges after analysis", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://example.com/",
+              finalUrl: "https://example.com/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 2, surgeEvidenceHosts: 0 },
+              hosts: [
+                { host: "example.com", category: "proxy-global", rule: "DOMAIN,example.com", reasons: ["target"], score: 100, selected: true, evidence: "UNKNOWN", confidence: "target" },
+                { host: "other.com", category: "direct-cn", rule: "DOMAIN,other.com", reasons: ["cn"], score: 78, selected: true, evidence: "UNKNOWN", confidence: "noise" },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url === "/api/connectivity") {
+          return new Response(
+            JSON.stringify({
+              results: [
+                { host: "example.com", status: "likely-proxy", reason: "Resolved to 93.184.216.34", resolvedIps: ["93.184.216.34"], isChinaIp: false },
+                { host: "other.com", status: "likely-direct", reason: "Resolved to 114.64.1.1", resolvedIps: ["114.64.1.1"], isChinaIp: true },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await screen.findByText("example.com");
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Resolved to 93.184.216.34")).toBeInTheDocument();
+      expect(screen.getByTitle("Resolved to 114.64.1.1")).toBeInTheDocument();
+    });
+  }, 10_000);
+
+  it("renders blocked probe status and error messages", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(JSON.stringify({ error: "bad url" }), { status: 400 });
+        }
+        throw new Error("network error");
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    expect(await screen.findByText("bad url")).toBeInTheDocument();
+    expect(screen.getByText(/当前路径不可达/)).toBeInTheDocument();
+  });
+
+  it("handles analyze with empty hosts gracefully", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://empty.test/",
+              finalUrl: "https://empty.test/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 0, surgeEvidenceHosts: 0 },
+              hosts: [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    await waitFor(() => {
+      expect(screen.getAllByText(/暂无域名/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("generates rules with correct tag name from URL", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/analyze") {
+          return new Response(
+            JSON.stringify({
+              inputUrl: "https://test.example/",
+              finalUrl: "https://test.example/",
+              workerReachable: true,
+              statusCode: 200,
+              fetchError: "",
+              evidenceStatus: "UNKNOWN",
+              blockedHosts: [],
+              stats: { discoveredHosts: 1, surgeEvidenceHosts: 0 },
+              hosts: [{
+                host: "test.example",
+                category: "proxy-global",
+                rule: "DOMAIN,test.example",
+                reasons: ["test"],
+                score: 90,
+                selected: true,
+                evidence: "UNKNOWN",
+                confidence: "target",
+              }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("", { status: 200 });
+      }),
+    );
+
+    render(<RuleWorkbench />);
+    await user.click(screen.getByRole("button", { name: "判断并生成规则" }));
+    expect(await screen.findByText("test.example")).toBeInTheDocument();
+  });
+});
+
+describe("connectivityBadge", () => {
+  it("returns correct badge for each status", () => {
+    expect(connectivityBadge(undefined)).toEqual({ emoji: "⚪", label: "未知" });
+    expect(connectivityBadge("direct")).toEqual({ emoji: "🟢", label: "直连" });
+    expect(connectivityBadge("likely-direct")).toEqual({ emoji: "🟡", label: "可能直连" });
+    expect(connectivityBadge("likely-proxy")).toEqual({ emoji: "🔴", label: "需代理" });
+    expect(connectivityBadge("proxy")).toEqual({ emoji: "🔴", label: "需代理" });
+    expect(connectivityBadge("unknown")).toEqual({ emoji: "⚪", label: "未知" });
   });
 });

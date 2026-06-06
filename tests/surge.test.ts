@@ -3,6 +3,7 @@ import {
   baseDomain,
   buildSurgeList,
   classifyDomains,
+  consolidateDomains,
   dedupeRules,
   extractHostsFromText,
   isAdOrTracker,
@@ -194,5 +195,56 @@ describe("surge domain utilities", () => {
       extractHostsFromText("window.api 1.2.3.4 file.bundle.ico file.bundle.js schema.org valid.example.com", "https://base.example.com"),
     ).toEqual(["base.example.com", "valid.example.com"]);
     expect(normalizeHost("bad host")).toBe("");
+  });
+
+  it("consolidates domains into groups by category and baseDomain", () => {
+    const domains = classifyDomains(
+      ["google.com", "apis.google.com", "mail.google.com", "accounts.google.com", "baidu.com", "www.baidu.com"],
+      [],
+      "suffix",
+    );
+    const groups = consolidateDomains(domains);
+
+    const googleGroup = groups.find((g) => g.baseDomain === "google.com");
+    expect(googleGroup).toBeDefined();
+    expect(googleGroup!.category).toBe("region-sensitive");
+    expect(googleGroup!.domains.length).toBe(4);
+    expect(googleGroup!.parentDomain?.host).toBe("google.com");
+
+    const baiduGroup = groups.find((g) => g.baseDomain === "baidu.com");
+    expect(baiduGroup).toBeDefined();
+    expect(baiduGroup!.category).toBe("direct-cn");
+    expect(baiduGroup!.domains.length).toBe(2);
+  });
+
+  it("keeps cross-category domains in separate groups", () => {
+    const domains = classifyDomains(
+      ["apple.com", "developer.apple.com", "doubleclick.net", "ads.doubleclick.net"],
+      [],
+      "suffix",
+    );
+    const groups = consolidateDomains(domains);
+
+    const appleGroup = groups.find((g) => g.baseDomain === "apple.com" && g.category === "region-sensitive");
+    const adGroup = groups.find((g) => g.baseDomain === "doubleclick.net" && g.category === "ad-tracking");
+
+    expect(appleGroup).toBeDefined();
+    expect(appleGroup!.domains.length).toBe(2);
+
+    expect(adGroup).toBeDefined();
+    expect(adGroup!.domains.length).toBe(2);
+  });
+
+  it("handles empty domain list in consolidation", () => {
+    const groups = consolidateDomains([]);
+    expect(groups).toEqual([]);
+  });
+
+  it("handles single-domain groups in consolidation", () => {
+    const domains = classifyDomains(["example.com"], [], "suffix");
+    const groups = consolidateDomains(domains);
+    expect(groups.length).toBe(1);
+    expect(groups[0].domains.length).toBe(1);
+    expect(groups[0].parentDomain?.host).toBe("example.com");
   });
 });
