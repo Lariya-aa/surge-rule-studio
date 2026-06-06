@@ -42,12 +42,11 @@ Open `http://localhost:3000`.
 # Build
 docker build -t surge-rule-studio .
 
-# Run locally (preview mode)
-docker run -p 8787:8787 surge-rule-studio
+# Run locally
+docker run -p 3000:3000 surge-rule-studio
 
-# Deploy to Cloudflare
-docker run -e CLOUDFLARE_API_TOKEN=xxx -e CLOUDFLARE_ACCOUNT_ID=yyy \
-  surge-rule-studio wrangler deploy --config dist/server/wrangler.json
+# Run with Docker Compose (see docker-compose.yml)
+docker compose up -d
 ```
 
 ## Deployment
@@ -107,4 +106,4 @@ Coverage thresholds (enforced): statements/branches/functions/lines ≥ 95%.
 
 ## License
 
-Private project.
+[MIT](LICENSE)

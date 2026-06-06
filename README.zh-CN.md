@@ -42,12 +42,11 @@ npm run dev
 # 构建镜像
 docker build -t surge-rule-studio .
 
-# 本地预览
-docker run -p 8787:8787 surge-rule-studio
+# 本地运行
+docker run -p 3000:3000 surge-rule-studio
 
-# 部署到 Cloudflare
-docker run -e CLOUDFLARE_API_TOKEN=xxx -e CLOUDFLARE_ACCOUNT_ID=yyy \
-  surge-rule-studio wrangler deploy --config dist/server/wrangler.json
+# 使用 Docker Compose（见 docker-compose.yml）
+docker compose up -d
 ```
 
 ## 部署
@@ -107,4 +106,4 @@ npm run test:e2e        # Playwright E2E 测试
 
 ## 许可证
 
-私有项目。
+[MIT](LICENSE)
