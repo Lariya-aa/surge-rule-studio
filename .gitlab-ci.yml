@@ -1,7 +1,6 @@
 stages:
   - test
   - deploy
-  - docker
 
 variables:
   NODE_VERSION: "22"
@@ -43,26 +42,5 @@ deploy:
     name: production
     url: https://surge-rule-studio.${CLOUDFLARE_ACCOUNT_ID}.workers.dev
 
-# ── Build & push Docker image to GitHub Container Registry (kaniko) ──
-docker:
-  stage: docker
-  before_script:
-    # Download kaniko executor if not cached
-    - |
-      if [ ! -f /tmp/kaniko/executor ]; then
-        mkdir -p /tmp/kaniko
-        curl -fsSL "https://github.com/GoogleContainerTools/kaniko/releases/latest/download/executor" -o /tmp/kaniko/executor
-        chmod +x /tmp/kaniko/executor
-      fi
-    - mkdir -p /tmp/kaniko/.docker
-    - echo "{\"auths\":{\"ghcr.io\":{\"auth\":\"$(echo -n "Lariya-aa:${GITHUB_TOKEN}" | base64)\"}}}" > /tmp/kaniko/.docker/config.json
-  script:
-    - /tmp/kaniko/executor
-      --context "${CI_PROJECT_DIR}"
-      --dockerfile "${CI_PROJECT_DIR}/Dockerfile"
-      --destination "${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
-      --destination "${IMAGE_NAME}:latest"
-      --cache=true
-  rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      when: manual
+# Docker image built locally: docker build -t ghcr.io/lariya-aa/surge-rule-studio:latest .
+# Push: docker push ghcr.io/lariya-aa/surge-rule-studio:latest
