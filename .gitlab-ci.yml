@@ -32,9 +32,6 @@ deploy:
     key: ${CI_COMMIT_REF_SLUG}
     paths:
       - node_modules/
-  variables:
-    CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
-    CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID}
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       when: manual
