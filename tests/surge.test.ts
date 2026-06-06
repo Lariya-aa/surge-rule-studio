@@ -12,9 +12,14 @@ import {
   normalizeHost,
   normalizeInputUrl,
   parseSurgeList,
+  parseSurgeEvidence,
   parseSurgeTrafficHosts,
   resolveUrl,
   ruleForHost,
+  scoreHostConfidence,
+  confidenceForHost,
+  isProviderHost,
+  selectHostsByConfidence,
   type ClassifiedDomain,
 } from "@/src/lib/surge";
 
@@ -23,6 +28,8 @@ describe("surge domain utilities", () => {
     expect(normalizeInputUrl("linux.do")).toBe("https://linux.do/");
     expect(normalizeInputUrl("https://linux.do/path#x")).toBe("https://linux.do/path#x");
     expect(normalizeHost("WWW.Example.COM.")).toBe("www.example.com");
+    expect(normalizeHost("[2001:db8::1]")).toBe("2001:db8::1");
+    expect(normalizeHost("2001:db8::2")).toBe("2001:db8::2");
     expect(() => normalizeInputUrl("")).toThrow("URL is required");
   });
 
@@ -73,6 +80,53 @@ describe("surge domain utilities", () => {
     ]);
   });
 
+  it("preserves direct, proxy, and blocked evidence without trusting browser reachability", () => {
+    const evidence = parseSurgeEvidence(JSON.stringify({
+      requests: [
+        { remoteHost: "direct.example.com:443", policyName: "DIRECT" },
+        { remoteHost: "proxied.example.com:443", remoteAddress: "1.1.1.1:443 (Proxy)", policyName: "Singapore" },
+        { remoteHost: "blocked.example.com:443", notes: ["failed direct connection"] },
+      ],
+    }));
+
+    expect(evidence).toEqual([
+      { host: "blocked.example.com", status: "BLOCKED_VERIFIED" },
+      { host: "direct.example.com", status: "DIRECT_VERIFIED" },
+      { host: "proxied.example.com", status: "PROXY_VERIFIED" },
+    ]);
+    expect(parseSurgeEvidence(JSON.stringify({ records: [{ URL: "https://records.example.com", policy: "DIRECT" }] }))).toEqual([
+      { host: "records.example.com", status: "DIRECT_VERIFIED" },
+    ]);
+  });
+
+  it("selects target and high-confidence provider hosts while leaving schema and unrelated hosts out", () => {
+    const html = `
+      <a href="https://podcasts.apple.com/us/podcast/show/id1">show</a>
+      <audio src="https://media.typlog.io/show.mp3"></audio>
+      <script type="application/ld+json">{"@context":"https://schema.org","url":"https://amazon.com/noise"}</script>
+      <a href="https://ximalaya.com/noise">noise</a>
+    `;
+    const hosts = extractHostsFromText(html, "https://podcasts.apple.com/us/podcast/show/id1");
+    const scored = selectHostsByConfidence(hosts, "https://podcasts.apple.com/us/podcast/show/id1");
+    const byHost = Object.fromEntries(scored.map((item) => [item.host, item]));
+
+    expect(hosts).toContain("podcasts.apple.com");
+    expect(hosts).toContain("media.typlog.io");
+    expect(hosts).not.toContain("schema.org");
+    expect(hosts).not.toContain("amazon.com");
+    expect(hosts).not.toContain("ximalaya.com");
+    expect(byHost["podcasts.apple.com"].selected).toBe(true);
+    expect(byHost["media.typlog.io"].selected).toBe(true);
+  });
+
+  it("scores runtime confidence without selecting unrelated noise", () => {
+    expect(scoreHostConfidence("", "example.com")).toBe(0);
+    expect(scoreHostConfidence("api.other-service.net", "example.com")).toBe(65);
+    expect(scoreHostConfidence("a.deep.example.com", "www.example.com")).toBe(90);
+    expect(confidenceForHost("media.typlog.io", "https://podcasts.apple.com/show")).toBe("provider");
+    expect(isProviderHost("")).toBe(false);
+  });
+
   it("classifies domestic, global, region-sensitive, blocked, and tracker domains", () => {
     const domains = classifyDomains(
       ["www.qq.com", "developer.apple.com", "api.openai.com", "stats.doubleclick.net", "blocked.example.com"],
@@ -120,6 +174,7 @@ describe("surge domain utilities", () => {
     expect(list.text).toContain("DOMAIN-SUFFIX,qq.com");
     expect(list.text).toContain("DOMAIN-SUFFIX,openai.com");
     expect(list.text).not.toContain("doubleclick.net");
+    expect(buildSurgeList([], { title: "", source: "https://example.com", mode: "suffix", generatedAt: "now" }).text).toContain("# NAME: SurgeRules");
   });
 
   it("parses, dedupes, and merges Surge list files", () => {

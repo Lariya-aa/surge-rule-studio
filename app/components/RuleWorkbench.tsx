@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  RotateCcw,
   CheckCircle2,
   Copy,
   Download,
@@ -19,7 +20,9 @@ import {
   buildSurgeList,
   CATEGORY_LABELS,
   normalizeInputUrl,
+  parseSurgeList,
   type ClassifiedDomain,
+  type EvidenceStatus,
   type RuleCategory,
   type RuleMode,
 } from "@/src/lib/surge";
@@ -30,11 +33,12 @@ interface AnalyzeApiResult {
   workerReachable: boolean;
   statusCode: number | null;
   fetchError: string;
+  evidenceStatus: EvidenceStatus;
   hosts: ClassifiedDomain[];
   blockedHosts: string[];
   stats: {
     discoveredHosts: number;
-    surgeDumpHosts: number;
+    surgeEvidenceHosts: number;
   };
 }
 
@@ -60,6 +64,22 @@ const categoryTone: Record<RuleCategory, string> = {
   "ad-tracking": "border-zinc-300 bg-zinc-100 text-zinc-900",
 };
 
+const purposeTags = [
+  { label: "AI", path: "rules/AI.list" },
+  { label: "Google", path: "rules/Google.list" },
+  { label: "YouTube", path: "rules/YouTube.list" },
+  { label: "Netflix", path: "rules/Netflix.list" },
+  { label: "Streaming", path: "rules/Streaming.list" },
+  { label: "Game", path: "rules/Game.list" },
+  { label: "Forum", path: "rules/Forum.list" },
+  { label: "Social", path: "rules/Social.list" },
+  { label: "Apple", path: "rules/Apple.list" },
+  { label: "Podcast", path: "rules/Podcast.list" },
+  { label: "Ads", path: "rules/Ads.list" },
+  { label: "Privacy", path: "rules/Privacy.list" },
+  { label: "Custom", path: "rules/Custom.list" },
+];
+
 export default function RuleWorkbench() {
   const [url, setUrl] = useState("https://linux.do/");
   const [mode, setMode] = useState<RuleMode>("suffix");
@@ -73,6 +93,14 @@ export default function RuleWorkbench() {
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState("");
+  const [activeTag, setActiveTag] = useState("AI");
+  const [customTag, setCustomTag] = useState("Custom");
+  const [tagBuckets, setTagBuckets] = useState<Record<string, string[]>>({});
+  const [tagSources, setTagSources] = useState<Record<string, string>>({});
+  const [analysisTag, setAnalysisTag] = useState("");
+  const [pathLocked, setPathLocked] = useState(false);
+  const [surgeDraft, setSurgeDraft] = useState("");
+  const [surgeEdited, setSurgeEdited] = useState(false);
   const [githubForm, setGithubForm] = useState({
     owner: "",
     repo: "",
@@ -83,13 +111,24 @@ export default function RuleWorkbench() {
   });
   const [uploadStatus, setUploadStatus] = useState("");
 
-  const surgeList = useMemo(() => {
-    return buildSurgeList(domains, {
-      title: titleFromUrl(url),
-      source: url,
-      mode,
-    }).text;
-  }, [domains, mode, url]);
+  const activeTagKey = activeTag === "Custom" ? customTag.trim() || "Custom" : activeTag;
+
+  const generatedSurgeList = useMemo(() => {
+    const bucketRules = tagBuckets[activeTagKey] || [];
+    const sourceUrl = analysisTag === activeTagKey
+      ? analysis?.inputUrl || url
+      : tagSources[activeTagKey] || url;
+    const currentRules = analysisTag === activeTagKey
+      ? parseSurgeList(buildSurgeList(domains, {
+        title: titleFromUrl(sourceUrl),
+        source: sourceUrl,
+        mode,
+    }).text)
+      : [];
+    return formatTaggedSurgeList(activeTagKey, sourceUrl, mode, mergeRuleLines(bucketRules, currentRules));
+  }, [activeTagKey, analysis?.inputUrl, analysisTag, domains, mode, tagBuckets, tagSources, url]);
+
+  const surgeText = surgeEdited ? surgeDraft : generatedSurgeList;
 
   const grouped = useMemo(() => {
     const groups: Record<RuleCategory, ClassifiedDomain[]> = {
@@ -124,6 +163,18 @@ export default function RuleWorkbench() {
       }
       setAnalysis(payload);
       setDomains(payload.hosts);
+      setAnalysisTag(activeTagKey);
+      const autoRules = parseSurgeList(buildSurgeList(payload.hosts, {
+        title: titleFromUrl(payload.inputUrl),
+        source: payload.inputUrl,
+        mode,
+      }).text);
+      setTagBuckets((current) => ({
+        ...current,
+        [activeTagKey]: mergeRuleLines(current[activeTagKey] || [], autoRules),
+      }));
+      setTagSources((current) => ({ ...current, [activeTagKey]: payload.inputUrl }));
+      setSurgeEdited(false);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Analyze request failed");
     } finally {
@@ -133,15 +184,26 @@ export default function RuleWorkbench() {
   }
 
   function updateDomain(host: string, patch: Partial<ClassifiedDomain>) {
-    setDomains((current) => current.map((domain) => (domain.host === host ? { ...domain, ...patch } : domain)));
+    const nextDomains = domains.map((domain) => (domain.host === host ? { ...domain, ...patch } : domain));
+    setDomains(nextDomains);
+    if (analysisTag === activeTagKey) {
+      const sourceUrl = analysis?.inputUrl || url;
+      const rules = parseSurgeList(buildSurgeList(nextDomains, {
+        title: titleFromUrl(sourceUrl),
+        source: sourceUrl,
+        mode,
+      }).text);
+      setTagBuckets((buckets) => ({ ...buckets, [activeTagKey]: rules }));
+    }
+    setSurgeEdited(false);
   }
 
   async function handleCopy() {
-    await navigator.clipboard.writeText(surgeList);
+    await navigator.clipboard.writeText(surgeText);
   }
 
   function handleDownload() {
-    const blob = new Blob([surgeList], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([surgeText], { type: "text/plain;charset=utf-8" });
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = href;
@@ -157,7 +219,7 @@ export default function RuleWorkbench() {
       const response = await fetch("/api/github/upload", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...githubForm, content: surgeList }),
+        body: JSON.stringify({ ...githubForm, content: surgeText }),
       });
       const payload = (await response.json()) as { rawUrl?: string; error?: string };
       if (!response.ok) {
@@ -169,6 +231,19 @@ export default function RuleWorkbench() {
       setUploadStatus("");
       setError(uploadError instanceof Error ? uploadError.message : "GitHub upload failed");
     }
+  }
+
+  function handleTagClick(label: string, path: string) {
+    setActiveTag(label);
+    setSurgeEdited(false);
+    if (!pathLocked) {
+      setGithubForm((current) => ({ ...current, path }));
+    }
+  }
+
+  function handlePathChange(path: string) {
+    setPathLocked(true);
+    setGithubForm((current) => ({ ...current, path }));
   }
 
   return (
@@ -260,26 +335,60 @@ export default function RuleWorkbench() {
                 {error}
               </div>
             ) : null}
+            <div className="rounded-md border border-[#cbd4c6] bg-white p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold">用途标签</h2>
+                  <p className="mt-1 text-xs text-[#68746d]">标签会累积当前页面会话内的规则；手动修改 path 后以 path 为准。</p>
+                </div>
+                <span className="rounded-md bg-[#eef4e8] px-2 py-1 text-xs text-[#26312b]">{activeTagKey}</span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {purposeTags.map((tag) => (
+                  <button
+                    className={`h-8 rounded-md border px-3 text-xs font-semibold ${activeTag === tag.label ? "border-[#173b35] bg-[#173b35] text-white" : "border-[#cbd4c6] bg-white text-[#26312b]"}`}
+                    key={tag.label}
+                    onClick={() => handleTagClick(tag.label, tag.path)}
+                    type="button"
+                  >
+                    {tag.label}
+                  </button>
+                ))}
+              </div>
+              {activeTag === "Custom" ? (
+                <label className="mt-3 block">
+                  <span className="mb-1 block text-xs font-medium">自定义标签</span>
+                  <input
+                    className="h-9 w-full rounded-md border border-[#bfcab9] px-3 text-sm outline-none focus:border-[#173b35]"
+                    onChange={(event) => {
+                      setCustomTag(event.target.value);
+                      setSurgeEdited(false);
+                    }}
+                    value={customTag}
+                  />
+                </label>
+              ) : null}
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
             <StatusTile
               icon={browserProbe.status === "blocked" ? XCircle : CheckCircle2}
-              label="用户网络直连"
+              label="当前访问路径"
               tone={browserProbe.status === "reachable" ? "good" : browserProbe.status === "blocked" ? "bad" : "neutral"}
               value={browserStatusText(browserProbe)}
             />
             <StatusTile
-              icon={analysis?.workerReachable ? CheckCircle2 : ShieldAlert}
-              label="服务端抓取"
-              tone={analysis?.workerReachable ? "good" : analysis ? "bad" : "neutral"}
-              value={analysis ? `${analysis.statusCode ?? "ERR"} / ${analysis.finalUrl}` : "等待判断"}
+              icon={analysis?.evidenceStatus === "DIRECT_VERIFIED" ? CheckCircle2 : ShieldAlert}
+              label="直连证据"
+              tone={analysis?.evidenceStatus === "DIRECT_VERIFIED" ? "good" : analysis?.evidenceStatus === "PROXY_VERIFIED" ? "warn" : analysis?.evidenceStatus === "BLOCKED_VERIFIED" ? "bad" : "neutral"}
+              value={analysis ? evidenceStatusText(analysis.evidenceStatus) : "等待 Surge 证据"}
             />
             <StatusTile
               icon={RadioTower}
-              label="Surge 阻断输入"
-              tone={analysis?.stats.surgeDumpHosts ? "warn" : "neutral"}
-              value={analysis?.stats.surgeDumpHosts ? `${analysis.stats.surgeDumpHosts} 个域名` : "可粘贴 dump/log"}
+              label="Surge 证据输入"
+              tone={analysis?.stats.surgeEvidenceHosts ? "warn" : "neutral"}
+              value={analysis?.stats.surgeEvidenceHosts ? `${analysis.stats.surgeEvidenceHosts} 个域名` : "可粘贴 dump/log"}
             />
           </div>
         </div>
@@ -324,6 +433,9 @@ export default function RuleWorkbench() {
             <div className="flex items-center justify-between border-b border-[#e1e6dc] px-4 py-3">
               <h2 className="font-semibold">Surge list 输出</h2>
               <div className="flex gap-2">
+                <button className="grid h-9 w-9 place-items-center rounded-md border border-[#cbd4c6]" onClick={() => { setSurgeEdited(false); setSurgeDraft(""); }} title="Regenerate" type="button">
+                  <RotateCcw size={17} />
+                </button>
                 <button className="grid h-9 w-9 place-items-center rounded-md border border-[#cbd4c6]" onClick={handleCopy} title="Copy" type="button">
                   <Copy size={17} />
                 </button>
@@ -334,9 +446,15 @@ export default function RuleWorkbench() {
             </div>
             <textarea
               className="h-80 w-full resize-y border-0 bg-[#101513] p-4 font-mono text-xs leading-6 text-[#e7f1e8] outline-none"
-              readOnly
-              value={surgeList}
+              onChange={(event) => {
+                setSurgeDraft(event.target.value);
+                setSurgeEdited(true);
+              }}
+              value={surgeText}
             />
+            <p className="border-t border-[#e1e6dc] px-4 py-2 text-xs text-[#68746d]">
+              {surgeEdited ? "使用用户编辑后的文本进行复制、下载和上传。" : "当前文本由选中域名和用途标签自动生成。"}
+            </p>
           </div>
 
           <div className="rounded-md border border-[#cbd4c6] bg-white">
@@ -347,7 +465,7 @@ export default function RuleWorkbench() {
             <div className="grid gap-3 p-4 sm:grid-cols-2">
               <Field label="Owner" value={githubForm.owner} onChange={(owner) => setGithubForm((current) => ({ ...current, owner }))} />
               <Field label="Repo" value={githubForm.repo} onChange={(repo) => setGithubForm((current) => ({ ...current, repo }))} />
-              <Field label="Path" value={githubForm.path} onChange={(path) => setGithubForm((current) => ({ ...current, path }))} />
+              <Field label="Path" value={githubForm.path} onChange={handlePathChange} />
               <Field label="Branch" value={githubForm.branch} onChange={(branch) => setGithubForm((current) => ({ ...current, branch }))} />
               <label className="sm:col-span-2">
                 <span className="mb-1 block text-sm font-medium">Fine-grained PAT</span>
@@ -514,9 +632,16 @@ function browserStatusText(probe: BrowserProbe): string {
     return "检测中";
   }
   if (probe.status === "reachable") {
-    return `可直连 / ${probe.durationMs}ms`;
+    return `浏览器当前路径可达 / ${probe.durationMs}ms`;
   }
-  return `不可直连 / ${probe.error || "blocked"}`;
+  return `当前路径不可达 / ${probe.error || "blocked"}`;
+}
+
+function evidenceStatusText(status: EvidenceStatus): string {
+  if (status === "DIRECT_VERIFIED") return "Surge 证据显示 DIRECT，才可视为直连";
+  if (status === "PROXY_VERIFIED") return "Surge 证据显示走代理，不是直连";
+  if (status === "BLOCKED_VERIFIED") return "Surge 证据显示失败或阻断";
+  return "未提供可证明直连的 Surge 证据";
 }
 
 function titleFromUrl(rawUrl: string): string {
@@ -533,4 +658,21 @@ function safeExternalHref(rawUrl: string): string {
   } catch {
     return "about:blank";
   }
+}
+
+function mergeRuleLines(a: string[], b: string[]): string[] {
+  return Array.from(new Set([...a, ...b].map((line) => line.trim()).filter(Boolean))).sort();
+}
+
+function formatTaggedSurgeList(tag: string, source: string, mode: RuleMode, rules: string[]): string {
+  const header = [
+    `# NAME: ${tag}`,
+    `# SOURCE: ${source.replace(/[\r\n]/g, " ")}`,
+    `# TAG: ${tag.replace(/[\r\n]/g, " ")}`,
+    `# UPDATED: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+    `# MODE: ${mode}`,
+    "# FORMAT: surge",
+    `# RULES: ${rules.length}`,
+  ];
+  return `${header.join("\n")}\n${rules.join("\n")}${rules.length ? "\n" : ""}`;
 }

@@ -7,6 +7,14 @@ export type RuleCategory =
 
 export type RuleMode = "exact" | "suffix";
 
+export type EvidenceStatus =
+  | "DIRECT_VERIFIED"
+  | "PROXY_VERIFIED"
+  | "BLOCKED_VERIFIED"
+  | "UNKNOWN";
+
+export type HostConfidence = "target" | "provider" | "noise";
+
 export interface ClassifiedDomain {
   host: string;
   category: RuleCategory;
@@ -14,6 +22,8 @@ export interface ClassifiedDomain {
   reasons: string[];
   score: number;
   selected: boolean;
+  evidence: EvidenceStatus;
+  confidence: HostConfidence;
 }
 
 export interface SurgeList {
@@ -217,13 +227,22 @@ const REGION_SENSITIVE_DOMAINS = new Set([
 ]);
 
 const BARE_DOMAIN_DENYLIST = new Set([
+  "amazon.com",
   "example.com",
   "example.net",
   "example.org",
   "schema.org",
+  "ximalaya.com",
   "window.api",
   "w3.org",
   "www.w3.org",
+]);
+
+const BASE_DOMAIN_DENYLIST = new Set([
+  "amazon.com",
+  "schema.org",
+  "ximalaya.com",
+  "w3.org",
 ]);
 
 const FILE_LIKE_TLDS = new Set([
@@ -262,6 +281,43 @@ const FILE_LIKE_TLDS = new Set([
   "xz",
   "zip",
 ]);
+
+const PROVIDER_SUFFIXES = new Set([
+  "acast.com",
+  "cdn-apple.com",
+  "fireside.fm",
+  "firstory.me",
+  "ghostisland.media",
+  "mzstatic.com",
+  "omny.fm",
+  "omnycontent.com",
+  "typlog.io",
+  "typlog.com",
+  "xyzfm.space",
+  "libsyn.com",
+  "simplecast.com",
+  "anchor.fm",
+  "podbean.com",
+  "buzzsprout.com",
+  "transistor.fm",
+  "captivate.fm",
+  "spreaker.com",
+  "audioboom.com",
+  "player.fm",
+  "podtrac.com",
+  "chartable.com",
+  "megaphone.fm",
+  "art19.com",
+  "redcircle.com",
+  "castbox.fm",
+  "ivoox.com",
+  "podcast.co",
+  "rss.com",
+  "soundon.fm",
+  "pinecast.com",
+]);
+
+const RUNTIME_KEYWORDS = /\b(api|asset|assets|audio|cdn|edge|feed|file|image|img|media|play|player|playback|podcast|rss|static|stream|video)\b/;
 
 const CATEGORY_ORDER: RuleCategory[] = [
   "direct-cn",
@@ -317,7 +373,7 @@ export function extractCandidates(text: string, baseUrl: string): Set<string> {
     return candidates;
   }
 
-  const absoluteUrlPattern = /https?:\/\/[^\s"'<>`;,)]+/gi;
+  const absoluteUrlPattern = /https?:\/\/[^\s"'<>`,;)]+/gi;
   const protocolRelativePattern = /(^|[^a-zA-Z0-9_:-])\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s"'<>`]*)?/g;
   const attrPattern = /(?:href|src|action|poster|data-src|data-href|content)\s*=\s*["']([^"']+)["']/gi;
   const srcsetPattern = /srcset\s*=\s*["']([^"']+)["']/gi;
@@ -351,7 +407,7 @@ export function extractHostsFromText(text: string, baseUrl: string): string[] {
   for (const candidate of extractCandidates(text, baseUrl)) {
     const resolved = resolveUrl(candidate, baseUrl);
     const host = resolved ? hostFromUrl(resolved) : "";
-    if (host) {
+    if (host && !isDeniedHost(host)) {
       hosts.add(host);
     }
   }
@@ -378,32 +434,200 @@ export function resolveUrl(candidate: string, baseUrl: string): string {
   }
 }
 
-export function parseSurgeTrafficHosts(input: string): string[] {
-  const hosts = new Set<string>();
+export interface SurgeEvidence {
+  host: string;
+  status: EvidenceStatus;
+}
+
+export function parseSurgeEvidence(input: string): SurgeEvidence[] {
   const raw = String(input || "").trim();
   if (!raw) {
     return [];
   }
 
+  let parsed: unknown;
   try {
-    collectHostsFromUnknown(JSON.parse(raw), hosts);
+    parsed = JSON.parse(raw);
   } catch {
-    collectHostsFromText(raw, hosts);
+    parsed = raw;
   }
 
-  return Array.from(hosts).filter(Boolean).sort(sortHosts);
+  const records: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    records.push(...parsed);
+  } else if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+    if (Array.isArray(obj.requests)) {
+      records.push(...obj.requests);
+    } else if (Array.isArray(obj.records)) {
+      records.push(...obj.records);
+    } else if (Array.isArray(obj.logs)) {
+      records.push(...obj.logs);
+    } else {
+      records.push(obj);
+    }
+  } else {
+    records.push(parsed);
+  }
+
+  const evidenceMap = new Map<string, EvidenceStatus>();
+
+  for (const record of records) {
+    if (Array.isArray(record)) {
+      const nestedHosts = new Set<string>();
+      collectHostsFromUnknown(record, nestedHosts);
+      for (const host of nestedHosts) {
+        mergeEvidence(evidenceMap, host, "UNKNOWN");
+      }
+      continue;
+    }
+
+    if (!record || typeof record !== "object") {
+      // For plain text logs, scan the whole string for host + marker patterns
+      const text = String(record || "");
+      for (const host of hostsFromText(text)) {
+        const status = classifyLogText(text);
+        mergeEvidence(evidenceMap, host, status);
+      }
+      continue;
+    }
+
+    const obj = record as Record<string, unknown>;
+    const status = classifyRecord(obj);
+    for (const host of extractHostsFromRecord(obj)) {
+      mergeEvidence(evidenceMap, host, status);
+    }
+  }
+
+  return Array.from(evidenceMap.entries())
+    .map(([host, status]) => ({ host, status }))
+    .sort((a, b) => sortHosts(a.host, b.host));
 }
 
-export function classifyHost(host: string, blockedHosts: Set<string> = new Set()): Omit<ClassifiedDomain, "rule"> {
+function classifyRecord(obj: Record<string, unknown>): EvidenceStatus {
+  const note = stringifyRecordValue(obj.notes || obj.note || obj.error);
+  const remoteAddress = stringifyRecordValue(obj.remoteAddress || obj.remote);
+  const policyName = stringifyRecordValue(obj.policyName || obj.policy);
+  const rule = stringifyRecordValue(obj.rule || obj.ruleName);
+  const statusText = stringifyRecordValue(obj.status || obj.result);
+  const combined = `${note} ${remoteAddress} ${policyName} ${rule} ${statusText}`;
+
+  if (
+    /\b(failed|rejected|reset|timeout|block|drop|blocked)\b/i.test(combined) ||
+    /\b(failed|rejected|reset|timeout|block|drop|blocked)\b/i.test(statusText)
+  ) {
+    return "BLOCKED_VERIFIED";
+  }
+  if (
+    /\(Proxy\)/i.test(combined) ||
+    /proxy/i.test(policyName) ||
+    /proxy/i.test(rule)
+  ) {
+    return "PROXY_VERIFIED";
+  }
+  if (
+    /\bdirect\b/i.test(policyName) ||
+    /\bdirect\b/i.test(rule) ||
+    /\bdirect\b/i.test(combined)
+  ) {
+    return "DIRECT_VERIFIED";
+  }
+
+  return "UNKNOWN";
+}
+
+function extractHostsFromRecord(obj: Record<string, unknown>): string[] {
+  const hosts = new Set<string>();
+  const candidates = [
+    obj.remoteHost,
+    obj.host,
+    obj.domain,
+    obj.hostname,
+    obj.url,
+    obj.URL,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (!value) continue;
+    const host = normalizeHost(value.includes("://") ? hostFromUrl(value) : value.replace(/:\d+$/, ""));
+    if (host) hosts.add(host);
+  }
+
+  collectHostsFromUnknown(obj, hosts);
+  return Array.from(hosts).filter(Boolean);
+}
+
+function classifyLogText(text: string): EvidenceStatus {
+  const t = text.toLowerCase();
+  if (/\b(failed|rejected|reset|timeout|block|drop|blocked)\b/.test(t)) return "BLOCKED_VERIFIED";
+  if (/\(proxy\)/.test(t) || /\bproxy\b/.test(t)) return "PROXY_VERIFIED";
+  if (/\bdirect\b/.test(t)) return "DIRECT_VERIFIED";
+  return "UNKNOWN";
+}
+
+function stringifyRecordValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map(stringifyRecordValue).join(" ");
+  }
+  if (value && typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value || "");
+}
+
+function mergeEvidence(map: Map<string, EvidenceStatus>, host: string, status: EvidenceStatus) {
+  const current = map.get(host);
+  if (!current) {
+    map.set(host, status);
+    return;
+  }
+  // Prefer more specific statuses over UNKNOWN; BLOCKED > PROXY > DIRECT > UNKNOWN
+  const rank = (s: EvidenceStatus) =>
+    s === "BLOCKED_VERIFIED" ? 4 : s === "PROXY_VERIFIED" ? 3 : s === "DIRECT_VERIFIED" ? 2 : 1;
+  if (rank(status) > rank(current)) {
+    map.set(host, status);
+  }
+}
+
+function hostsFromText(text: string): string[] {
+  const hosts = new Set<string>();
+  const hostPortPattern = /\b(?:https?:\/\/)?([a-z0-9.-]+\.[a-z]{2,})(?::\d+)?(?:[/?#][^\s"']*)?/gi;
+  let match: RegExpExecArray | null;
+  while ((match = hostPortPattern.exec(text)) !== null) {
+    const host = normalizeHost(match[1] || "");
+    if (host && !BARE_DOMAIN_DENYLIST.has(host)) {
+      hosts.add(host);
+    }
+  }
+  return Array.from(hosts);
+}
+
+export function parseSurgeTrafficHosts(input: string): string[] {
+  return parseSurgeEvidence(input).map((e) => e.host);
+}
+
+export function classifyHost(
+  host: string,
+  blockedHosts: Set<string> = new Set(),
+  evidenceStatus: EvidenceStatus = "UNKNOWN",
+): Omit<ClassifiedDomain, "rule"> {
   const normalized = normalizeHost(host);
   const reasons: string[] = [];
   let category: RuleCategory = "proxy-global";
   let score = 50;
 
-  if (blockedHosts.has(normalized)) {
+  if (evidenceStatus === "BLOCKED_VERIFIED" || blockedHosts.has(normalized)) {
     category = "blocked";
     reasons.push("Surge traffic/log marked it as blocked or captured during a failed direct attempt");
     score = 95;
+  } else if (evidenceStatus === "PROXY_VERIFIED") {
+    category = "proxy-global";
+    reasons.push("Surge evidence shows traffic routed through proxy");
+    score = 88;
+  } else if (evidenceStatus === "DIRECT_VERIFIED") {
+    category = "direct-cn";
+    reasons.push("Surge evidence shows direct connection");
+    score = 80;
   } else if (isAdOrTracker(normalized)) {
     category = "ad-tracking";
     reasons.push("Matched local ad / analytics / tracker suffix list");
@@ -426,11 +650,19 @@ export function classifyHost(host: string, blockedHosts: Set<string> = new Set()
     reasons,
     score,
     selected: true,
+    evidence: evidenceStatus,
+    confidence: "noise",
   };
 }
 
-export function classifyDomains(hosts: string[], blockedHosts: string[] = [], mode: RuleMode = "suffix"): ClassifiedDomain[] {
+export function classifyDomains(
+  hosts: string[],
+  blockedHosts: string[] = [],
+  mode: RuleMode = "suffix",
+  evidence: SurgeEvidence[] = [],
+): ClassifiedDomain[] {
   const blocked = new Set(blockedHosts.map(normalizeHost).filter(Boolean));
+  const evidenceMap = new Map(evidence.map((e) => [normalizeHost(e.host), e.status]));
   const seen = new Map<string, ClassifiedDomain>();
 
   for (const host of hosts) {
@@ -438,7 +670,8 @@ export function classifyDomains(hosts: string[], blockedHosts: string[] = [], mo
     if (!normalized) {
       continue;
     }
-    const classified = classifyHost(normalized, blocked);
+    const evidenceStatus = evidenceMap.get(normalized) || "UNKNOWN";
+    const classified = classifyHost(normalized, blocked, evidenceStatus);
     seen.set(normalized, {
       ...classified,
       rule: ruleForHost(normalized, mode),
@@ -449,6 +682,63 @@ export function classifyDomains(hosts: string[], blockedHosts: string[] = [], mo
     const byCategory = CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category);
     return byCategory || sortHosts(a.host, b.host);
   });
+}
+
+export function scoreHostConfidence(host: string, inputHost: string): number {
+  const normalized = normalizeHost(host);
+  const input = normalizeHost(inputHost);
+  if (!normalized || !input) return 0;
+
+  // Exact match or root domain of input
+  if (normalized === input) return 100;
+  if (baseDomain(normalized) === baseDomain(input)) return 90;
+  if (normalized.endsWith(`.${baseDomain(input)}`)) return 85;
+
+  // Provider/runtime hosts
+  if (isProviderHost(normalized)) return 70;
+
+  // Known CDN / media / API patterns
+  if (RUNTIME_KEYWORDS.test(normalized)) {
+    return 65;
+  }
+
+  return 40;
+}
+
+export function confidenceForHost(host: string, inputUrl: string): HostConfidence {
+  const inputHost = hostFromUrl(inputUrl);
+  const score = scoreHostConfidence(host, inputHost);
+  if (score >= 85) {
+    return "target";
+  }
+  if (score >= 65) {
+    return "provider";
+  }
+  return "noise";
+}
+
+export function isProviderHost(host: string): boolean {
+  const normalized = normalizeHost(host);
+  if (!normalized) return false;
+  return PROVIDER_SUFFIXES.has(normalized) || PROVIDER_SUFFIXES.has(baseDomain(normalized));
+}
+
+export function selectHostsByConfidence(
+  hosts: string[],
+  inputUrl: string,
+): Array<{ host: string; selected: boolean; score: number }> {
+  const inputHost = hostFromUrl(inputUrl);
+  const scored = hosts.map((host) => ({
+    host,
+    score: scoreHostConfidence(host, inputHost),
+  }));
+
+  // Always select target host and high-confidence provider/runtime hosts
+  return scored.map(({ host, score }) => ({
+    host,
+    score,
+    selected: score >= 65,
+  }));
 }
 
 export function buildSurgeList(
@@ -625,6 +915,11 @@ function normalizeBareDomainCandidate(value: string): string {
     return "";
   }
   return candidate;
+}
+
+function isDeniedHost(host: string): boolean {
+  const normalized = normalizeHost(host);
+  return BARE_DOMAIN_DENYLIST.has(normalized) || BASE_DOMAIN_DENYLIST.has(baseDomain(normalized));
 }
 
 function collectHostsFromUnknown(value: unknown, hosts: Set<string>) {

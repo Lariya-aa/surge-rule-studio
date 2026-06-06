@@ -10,8 +10,9 @@ test("user can analyze, inspect categories, and see Surge output", async ({ page
         workerReachable: true,
         statusCode: 200,
         fetchError: "",
+        evidenceStatus: "PROXY_VERIFIED",
         blockedHosts: ["ads.doubleclick.net"],
-        stats: { discoveredHosts: 3, surgeDumpHosts: 1 },
+        stats: { discoveredHosts: 3, surgeEvidenceHosts: 1 },
         hosts: [
           {
             host: "apple.com",
@@ -20,6 +21,8 @@ test("user can analyze, inspect categories, and see Surge output", async ({ page
             reasons: ["Known region-sensitive official site"],
             score: 82,
             selected: true,
+            evidence: "UNKNOWN",
+            confidence: "target",
           },
           {
             host: "www.qq.com",
@@ -28,6 +31,8 @@ test("user can analyze, inspect categories, and see Surge output", async ({ page
             reasons: ["Matches China TLD"],
             score: 78,
             selected: true,
+            evidence: "UNKNOWN",
+            confidence: "noise",
           },
           {
             host: "ads.doubleclick.net",
@@ -36,6 +41,8 @@ test("user can analyze, inspect categories, and see Surge output", async ({ page
             reasons: ["Surge traffic/log marked it as blocked"],
             score: 95,
             selected: true,
+            evidence: "BLOCKED_VERIFIED",
+            confidence: "noise",
           },
         ],
       }),

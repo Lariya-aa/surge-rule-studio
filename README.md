@@ -1,20 +1,31 @@
 # Surge Rule Studio
 
-Surge Rule Studio is a self-hostable Sites app for checking whether a URL is
-directly reachable from the user's browser, classifying discovered domains, and
-exporting selected results as Surge `.list` rules.
+Surge Rule Studio is a self-hostable Sites app for checking the current access
+path for a URL, classifying discovered domains, and exporting selected results
+as Surge `.list` rules.
 
 ## What it does
 
-- Runs a browser-side direct-connect probe for the current user network.
+- Runs a browser-side reachability probe for the current user network. This is
+  shown as the current access path, not proof of direct connectivity, because a
+  local proxy app can make browser requests reachable through proxy routing.
 - Runs a server-side fetch to extract domains from readable HTML, CSS, JSON, JS,
   XML, SVG, and related text resources.
 - Accepts pasted `surge-cli --raw dump recent` JSON or loose Surge logs, then
-  classifies those hosts as blocked candidates.
+  separates DIRECT, proxy-routed, blocked, and unknown evidence. Only explicit
+  Surge DIRECT evidence is treated as verified direct connectivity.
+- De-noises discovered hosts by selecting the input domain, same-site domains,
+  high-confidence runtime/CDN/media hosts, and known podcast/provider hosts by
+  default while leaving unrelated candidates visible for manual selection.
 - Classifies domains as domestic direct, global proxy, region-sensitive,
   blocked, or ad/promotion/tracking candidates.
 - Lets users override labels and selection before generating Surge rules.
+- Provides purpose tags such as AI, Google, YouTube, Netflix, Game, Forum,
+  Apple, Podcast, Ads, Privacy, and Custom. Tags keep session-local rule
+  buckets; manual GitHub path edits override tag path suggestions.
 - Supports exact `DOMAIN` rules or collapsed `DOMAIN-SUFFIX` rules.
+- Makes the generated Surge list editable. Copy, download, and GitHub upload
+  use the edited text until the user regenerates it.
 - Merges selected rules into a user's GitHub `.list` file through the GitHub
   Contents API.
 - Keeps developer link icons in the UI. Fill

@@ -1,10 +1,14 @@
 import {
   classifyDomains,
+  baseDomain,
+  confidenceForHost,
   extractHostsFromText,
   hostFromUrl,
   normalizeInputUrl,
-  parseSurgeTrafficHosts,
+  parseSurgeEvidence,
+  selectHostsByConfidence,
   type ClassifiedDomain,
+  type EvidenceStatus,
   type RuleMode,
 } from "./surge";
 
@@ -20,11 +24,12 @@ export interface AnalyzeResult {
   workerReachable: boolean;
   statusCode: number | null;
   fetchError: string;
+  evidenceStatus: EvidenceStatus;
   hosts: ClassifiedDomain[];
   blockedHosts: string[];
   stats: {
     discoveredHosts: number;
-    surgeDumpHosts: number;
+    surgeEvidenceHosts: number;
   };
 }
 
@@ -34,7 +39,9 @@ export async function analyzeUrl(
 ): Promise<AnalyzeResult> {
   const inputUrl = normalizeInputUrl(payload.url);
   const mode = payload.mode || "suffix";
-  const blockedHosts = parseSurgeTrafficHosts(payload.surgeDump || "");
+  const evidence = parseSurgeEvidence(payload.surgeDump || "");
+  const blockedHosts = evidence.filter((e) => e.status === "BLOCKED_VERIFIED").map((e) => e.host);
+  const evidenceStatus = summarizeEvidenceStatus(evidence, inputUrl);
   const discovered = new Set<string>();
   discovered.add(hostFromUrl(inputUrl));
 
@@ -62,19 +69,61 @@ export async function analyzeUrl(
     discovered.add(host);
   }
 
+  const classified = classifyDomains(Array.from(discovered), blockedHosts, mode, evidence);
+  const confidence = selectHostsByConfidence(
+    classified.map((c) => c.host),
+    inputUrl,
+  );
+  const confidenceMap = new Map(confidence.map((c) => [c.host, c]));
+
+  const hosts = classified.map((domain) => {
+    const conf = confidenceMap.get(domain.host);
+    const confidence = confidenceForHost(domain.host, inputUrl);
+    const reasons = [...domain.reasons];
+    if (confidence === "target") {
+      reasons.push("Matches the input domain or its registrable base domain");
+    } else if (confidence === "provider") {
+      reasons.push("High-confidence runtime/provider host");
+    } else {
+      reasons.push("Noise candidate; not selected by default");
+    }
+    return {
+      ...domain,
+      selected: conf ? conf.selected : domain.selected,
+      score: conf ? Math.max(domain.score, conf.score) : domain.score,
+      confidence,
+      reasons,
+    };
+  });
+
   return {
     inputUrl,
     finalUrl,
     workerReachable,
     statusCode,
     fetchError,
-    hosts: classifyDomains(Array.from(discovered), blockedHosts, mode),
+    evidenceStatus,
+    hosts,
     blockedHosts,
     stats: {
       discoveredHosts: discovered.size,
-      surgeDumpHosts: blockedHosts.length,
+      surgeEvidenceHosts: evidence.length,
     },
   };
+}
+
+function summarizeEvidenceStatus(evidence: Array<{ host: string; status: EvidenceStatus }>, inputUrl: string): EvidenceStatus {
+  const inputHost = hostFromUrl(inputUrl);
+  const inputBase = baseDomain(inputHost);
+  const relevant = evidence.filter((item) => {
+    const host = item.host;
+    return host === inputHost || (inputBase && (host === inputBase || host.endsWith(`.${inputBase}`)));
+  });
+  const pool = relevant.length > 0 ? relevant : evidence;
+  if (pool.some((item) => item.status === "BLOCKED_VERIFIED")) return "BLOCKED_VERIFIED";
+  if (pool.some((item) => item.status === "PROXY_VERIFIED")) return "PROXY_VERIFIED";
+  if (pool.some((item) => item.status === "DIRECT_VERIFIED")) return "DIRECT_VERIFIED";
+  return "UNKNOWN";
 }
 
 async function fetchWithTimeout(inputUrl: string, fetcher: typeof fetch): Promise<Response> {

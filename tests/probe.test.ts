@@ -17,6 +17,7 @@ describe("analyzeUrl", () => {
     expect(fetcher).toHaveBeenCalledOnce();
     expect(result.workerReachable).toBe(true);
     expect(result.statusCode).toBe(200);
+    expect(result.evidenceStatus).toBe("UNKNOWN");
     expect(result.hosts.map((host) => host.host)).toEqual(["example.com", "cdn.example.com", "doubleclick.net"]);
     expect(result.hosts.find((host) => host.host === "doubleclick.net")?.category).toBe("ad-tracking");
   });
@@ -30,7 +31,9 @@ describe("analyzeUrl", () => {
       {
         url: "blocked.example.com",
         mode: "exact",
-        surgeDump: JSON.stringify({ requests: [{ remoteHost: "api.blocked.example.com:443" }] }),
+        surgeDump: JSON.stringify({
+          requests: [{ remoteHost: "api.blocked.example.com:443", notes: ["failed direct connection"] }],
+        }),
       },
       fetcher,
     );
@@ -38,8 +41,48 @@ describe("analyzeUrl", () => {
     expect(result.workerReachable).toBe(false);
     expect(result.fetchError).toContain("network blocked");
     expect(result.blockedHosts).toEqual(["api.blocked.example.com"]);
+    expect(result.evidenceStatus).toBe("BLOCKED_VERIFIED");
     expect(result.hosts.find((host) => host.host === "api.blocked.example.com")?.category).toBe("blocked");
     expect(result.hosts.find((host) => host.host === "blocked.example.com")?.rule).toBe("DOMAIN,blocked.example.com");
+  });
+
+  it("does not treat browser reachability as direct when Surge evidence shows proxy routing", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(`<script src="https://media.example.com/player.js"></script>`, {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await analyzeUrl(
+      {
+        url: "https://example.com",
+        surgeDump: JSON.stringify({
+          requests: [{ remoteHost: "example.com:443", remoteAddress: "1.1.1.1:443 (Proxy)", policyName: "Singapore" }],
+        }),
+      },
+      fetcher,
+    );
+
+    expect(result.workerReachable).toBe(true);
+    expect(result.evidenceStatus).toBe("PROXY_VERIFIED");
+    expect(result.hosts.find((host) => host.host === "example.com")?.category).toBe("proxy-global");
+  });
+
+  it("accepts explicit DIRECT Surge evidence as the only direct verification", async () => {
+    const fetcher = vi.fn(async () => new Response("", { status: 200 })) as unknown as typeof fetch;
+
+    const result = await analyzeUrl(
+      {
+        url: "https://direct.example",
+        surgeDump: JSON.stringify({ requests: [{ remoteHost: "direct.example:443", policyName: "DIRECT" }] }),
+      },
+      fetcher,
+    );
+
+    expect(result.workerReachable).toBe(true);
+    expect(result.evidenceStatus).toBe("DIRECT_VERIFIED");
+    expect(result.hosts.find((host) => host.host === "direct.example")?.category).toBe("direct-cn");
   });
 
   it("skips large or binary bodies while preserving final URL host", async () => {
