@@ -6,8 +6,10 @@ import {
   consolidateDomains,
   dedupeRules,
   extractHostsFromText,
+  hostFromUrl,
   isAdOrTracker,
   isChinaSite,
+  isIpAddress,
   isRegionSensitive,
   mergeSurgeList,
   normalizeHost,
@@ -246,5 +248,228 @@ describe("surge domain utilities", () => {
     expect(groups.length).toBe(1);
     expect(groups[0].domains.length).toBe(1);
     expect(groups[0].parentDomain?.host).toBe("example.com");
+  });
+
+  it("classifies domains with empty and invalid hosts gracefully", () => {
+    const domains = classifyDomains(["", "  ", "valid.com", "bad host"], [], "suffix");
+    const byHost = Object.fromEntries(domains.map((d) => [d.host, d]));
+    expect(byHost["valid.com"]).toBeDefined();
+    expect(Object.keys(byHost)).not.toContain("");
+    expect(Object.keys(byHost)).not.toContain("bad host");
+  });
+
+  it("extracts hosts from edge-case HTML patterns", () => {
+    // srcset with empty entries
+    expect(extractHostsFromText('<img srcset="" />', "https://base.com")).toEqual(["base.com"]);
+    // CSS url() with empty value
+    expect(extractHostsFromText('body { background: url() }', "https://base.com")).toEqual(["base.com"]);
+    // @import with empty value
+    expect(extractHostsFromText('@import ""', "https://base.com")).toEqual(["base.com"]);
+    // protocol-relative URL
+    expect(extractHostsFromText('//cdn.example.com/app.js', "https://base.com")).toEqual(["base.com", "cdn.example.com"]);
+    // bare domain with port
+    expect(extractHostsFromText("api.example.com:8080", "https://base.com")).toEqual(["base.com", "api.example.com"]);
+    // meta refresh
+    expect(extractHostsFromText('<meta content="0; url=https://redirect.example.com">', "https://base.com")).toEqual(["base.com", "redirect.example.com"]);
+    // meta refresh with quotes
+    expect(extractHostsFromText('<meta content="0; url=\'https://redirect.example.com\'">', "https://base.com")).toEqual(["base.com", "redirect.example.com"]);
+  });
+
+  it("handles resolveUrl edge cases", () => {
+    expect(resolveUrl("", "https://example.com")).toBe("");
+    expect(resolveUrl("  ", "https://example.com")).toBe("");
+    expect(resolveUrl(null as unknown as string, "https://example.com")).toBe("");
+    expect(resolveUrl(undefined as unknown as string, "https://example.com")).toBe("");
+    expect(resolveUrl("javascript:alert(1)", "https://example.com")).toBe("");
+    expect(resolveUrl("mailto:test@example.com", "https://example.com")).toBe("");
+    expect(resolveUrl("tel:+1234567890", "https://example.com")).toBe("");
+    expect(resolveUrl("data:text/html,<h1>hi</h1>", "https://example.com")).toBe("");
+    expect(resolveUrl("blob:https://example.com/id", "https://example.com")).toBe("");
+    // ftp protocol (parsed but not http/https)
+    expect(resolveUrl("ftp://files.example.com/doc", "https://example.com")).toBe("");
+    // bare domain
+    expect(resolveUrl("api.example.com/v1", "https://example.com")).toBe("https://api.example.com/v1");
+    // bare domain with port
+    expect(resolveUrl("api.example.com:8080/v1", "https://example.com")).toBe("https://api.example.com:8080/v1");
+  });
+
+  it("detects IPv4 and IPv6 addresses correctly", () => {
+    expect(isIpAddress("192.168.1.1")).toBe(true);
+    expect(isIpAddress("0.0.0.0")).toBe(true);
+    expect(isIpAddress("255.255.255.255")).toBe(true);
+    expect(isIpAddress("2001:db8::1")).toBe(true);
+    expect(isIpAddress("::1")).toBe(true);
+    expect(isIpAddress("fe80::1")).toBe(true);
+    expect(isIpAddress("example.com")).toBe(false);
+    expect(isIpAddress("")).toBe(false);
+    expect(isIpAddress("abc.def.ghi.jkl")).toBe(false);
+  });
+
+  it("handles baseDomain edge cases", () => {
+    expect(baseDomain("")).toBe("");
+    expect(baseDomain("localhost")).toBe("localhost");
+    expect(baseDomain("a.b.c.d.example.com")).toBe("example.com");
+    expect(baseDomain("sub.example.co.uk")).toBe("example.co.uk");
+    expect(baseDomain("deeply.nested.sub.example.com.cn")).toBe("example.com.cn");
+  });
+
+  it("handles isDeniedHost and isAdOrTracker edge cases", () => {
+    expect(isChinaSite("")).toBe(false);
+    expect(isChinaSite("example.com")).toBe(false);
+    expect(isRegionSensitive("")).toBe(false);
+    expect(isRegionSensitive("unknown.com")).toBe(false);
+    expect(isAdOrTracker("")).toBe(false);
+    expect(isAdOrTracker("normal.com")).toBe(false);
+    expect(isProviderHost("unknown.com")).toBe(false);
+  });
+
+  it("handles scoreHostConfidence edge cases", () => {
+    expect(scoreHostConfidence("", "")).toBe(0);
+    expect(scoreHostConfidence("example.com", "")).toBe(0);
+    expect(scoreHostConfidence("", "example.com")).toBe(0);
+    // provider host
+    expect(scoreHostConfidence("cdn-apple.com", "example.com")).toBe(70);
+    // runtime keyword host
+    expect(scoreHostConfidence("api.example.com", "other.com")).toBe(65);
+    // same base domain
+    expect(scoreHostConfidence("www.example.com", "example.com")).toBe(90);
+    // noise (default)
+    expect(scoreHostConfidence("unrelated.org", "example.com")).toBe(40);
+  });
+
+  it("handles confidenceForHost edge cases", () => {
+    expect(confidenceForHost("", "https://example.com")).toBe("noise");
+    expect(confidenceForHost("cdn-apple.com", "https://example.com")).toBe("provider");
+    expect(confidenceForHost("media.typlog.io", "https://example.com")).toBe("provider");
+  });
+
+  it("handles selectHostsByConfidence edge cases", () => {
+    const result = selectHostsByConfidence([], "https://example.com");
+    expect(result).toEqual([]);
+    const single = selectHostsByConfidence(["example.com"], "https://example.com");
+    expect(single[0].selected).toBe(true);
+    expect(single[0].score).toBe(100);
+  });
+
+  it("handles parseSurgeEvidence edge cases", () => {
+    expect(parseSurgeEvidence("")).toEqual([]);
+    expect(parseSurgeEvidence("  ")).toEqual([]);
+    expect(parseSurgeEvidence("null")).toEqual([]);
+    expect(parseSurgeEvidence(JSON.stringify({}))).toEqual([]);
+    expect(parseSurgeEvidence(JSON.stringify({ requests: [] }))).toEqual([]);
+    expect(parseSurgeEvidence(JSON.stringify({ records: [] }))).toEqual([]);
+    expect(parseSurgeEvidence(JSON.stringify({ logs: [] }))).toEqual([]);
+    // nested arrays
+    expect(parseSurgeEvidence(JSON.stringify([["nested.example.com"]]))).toEqual([
+      { host: "nested.example.com", status: "UNKNOWN" },
+    ]);
+    // object with nested domain
+    expect(parseSurgeEvidence(JSON.stringify([{ other: { domain: "deep.example.net" } }]))).toEqual([
+      { host: "deep.example.net", status: "UNKNOWN" },
+    ]);
+  });
+
+  it("handles parseSurgeList and mergeSurgeList edge cases", () => {
+    expect(parseSurgeList("")).toEqual([]);
+    expect(parseSurgeList("# comment only")).toEqual([]);
+    expect(parseSurgeList("FINAL,DIRECT")).toEqual([]);
+    expect(parseSurgeList("DOMAIN,example.com")).toEqual(["DOMAIN,example.com"]);
+    expect(mergeSurgeList("", "")).toContain("# RULES: 0");
+    expect(mergeSurgeList("DOMAIN,a.com\n", "DOMAIN,b.com\n")).toContain("DOMAIN,a.com");
+  });
+
+  it("handles buildSurgeList edge cases", () => {
+    const empty = buildSurgeList([], { title: "", source: "", mode: "suffix" });
+    expect(empty.text).toContain("# RULES: 0");
+    expect(empty.groups["direct-cn"]).toEqual([]);
+    expect(empty.groups["proxy-global"]).toEqual([]);
+  });
+
+  it("handles normalizeHost and hostFromUrl edge cases", () => {
+    expect(normalizeHost("")).toBe("");
+    expect(normalizeHost("  ")).toBe("");
+    expect(normalizeHost("bad host")).toBe("");
+    expect(normalizeHost("UPPER.CASE")).toBe("upper.case");
+    expect(normalizeHost("trailing.dot.")).toBe("trailing.dot");
+    expect(hostFromUrl("not-a-url")).toBe("");
+    expect(hostFromUrl("")).toBe("");
+  });
+
+  it("handles ruleForHost edge cases", () => {
+    expect(ruleForHost("", "suffix")).toBe("");
+    expect(ruleForHost("", "exact")).toBe("");
+    expect(ruleForHost("localhost", "suffix")).toBe("DOMAIN,localhost");
+    expect(ruleForHost("192.168.0.1", "suffix")).toBe("DOMAIN,192.168.0.1");
+    expect(ruleForHost("192.168.0.1", "exact")).toBe("DOMAIN,192.168.0.1");
+    expect(ruleForHost("example.com", "suffix")).toBe("DOMAIN,example.com");
+    expect(ruleForHost("sub.example.com", "suffix")).toBe("DOMAIN-SUFFIX,example.com");
+    expect(ruleForHost("sub.example.co.uk", "suffix")).toBe("DOMAIN-SUFFIX,example.co.uk");
+    expect(ruleForHost("a.b.c.example.com", "exact")).toBe("DOMAIN,a.b.c.example.com");
+  });
+
+  it("merges evidence with different statuses for same host", () => {
+    const evidence = parseSurgeEvidence(JSON.stringify({
+      requests: [
+        { remoteHost: "mixed.example.com:443", policyName: "DIRECT" },
+        { remoteHost: "mixed.example.com:443", notes: ["failed"] },
+      ],
+    }));
+    // BLOCKED should win over DIRECT (higher rank)
+    expect(evidence.find((e) => e.host === "mixed.example.com")?.status).toBe("BLOCKED_VERIFIED");
+  });
+
+  it("handles classifyDomains with evidence and blocked hosts", () => {
+    const domains = classifyDomains(
+      ["direct.example.com", "proxy.example.com", "blocked.example.com", "unknown.example.com"],
+      ["blocked.example.com"],
+      "suffix",
+      [
+        { host: "direct.example.com", status: "DIRECT_VERIFIED" },
+        { host: "proxy.example.com", status: "PROXY_VERIFIED" },
+      ],
+    );
+    const byHost = Object.fromEntries(domains.map((d) => [d.host, d]));
+    expect(byHost["direct.example.com"].category).toBe("direct-cn");
+    expect(byHost["proxy.example.com"].category).toBe("proxy-global");
+    expect(byHost["blocked.example.com"].category).toBe("blocked");
+    expect(byHost["unknown.example.com"].category).toBe("proxy-global");
+  });
+
+  it("handles classifyLogText with no matching keywords", () => {
+    const evidence = parseSurgeEvidence("some random log text without keywords");
+    expect(evidence).toEqual([]);
+  });
+
+  it("classifies proxy evidence without parentheses", () => {
+    const evidence = parseSurgeEvidence("proxy.example.com connected via proxy");
+    expect(evidence.find((e) => e.host === "proxy.example.com")?.status).toBe("PROXY_VERIFIED");
+  });
+
+  it("classifies direct evidence from plain text logs", () => {
+    const evidence = parseSurgeEvidence("direct.example.com direct connection");
+    expect(evidence.find((e) => e.host === "direct.example.com")?.status).toBe("DIRECT_VERIFIED");
+  });
+
+  it("handles stringifyRecordValue with object values", () => {
+    const evidence = parseSurgeEvidence(JSON.stringify({
+      requests: [{ remoteHost: "test.example.com:443", notes: { key: "value" } }],
+    }));
+    expect(evidence.length).toBeGreaterThan(0);
+  });
+
+  it("handles consolidateDomains with mixed categories", () => {
+    const domains = classifyDomains(
+      ["apple.com", "developer.apple.com", "icloud.com", "www.icloud.com"],
+      [],
+      "suffix",
+    );
+    const groups = consolidateDomains(domains);
+    // apple.com and icloud.com are different base domains, both region-sensitive
+    const appleGroup = groups.find((g) => g.baseDomain === "apple.com");
+    const icloudGroup = groups.find((g) => g.baseDomain === "icloud.com");
+    expect(appleGroup).toBeDefined();
+    expect(icloudGroup).toBeDefined();
+    expect(appleGroup!.domains.length).toBe(2);
+    expect(icloudGroup!.domains.length).toBe(2);
   });
 });

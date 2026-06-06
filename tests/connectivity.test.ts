@@ -165,4 +165,122 @@ describe("connectivity utilities", () => {
     expect(results).toHaveLength(1);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it("handles DNS failure in batch check", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.includes("good.com")) {
+        return new Response(JSON.stringify({
+          Status: 0,
+          Answer: [{ name: "good.com", type: 1, TTL: 300, data: "93.184.216.34" }],
+        }));
+      }
+      throw new Error("DNS failure");
+    });
+
+    const results = await batchCheckConnectivity(["good.com", "bad.com"], fetcher);
+    expect(results).toHaveLength(2);
+    expect(results[0].status).toBe("likely-proxy");
+    expect(results[1].status).toBe("unknown");
+    expect(results[1].reason).toBe("DNS resolution failed");
+  });
+
+  it("classifies domains with multiple Chinese IPs", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 0,
+        Answer: [
+          { name: "multi.cn", type: 1, TTL: 300, data: "114.64.1.1" },
+          { name: "multi.cn", type: 1, TTL: 300, data: "222.128.1.1" },
+        ],
+      }));
+    });
+
+    const result = await checkConnectivity("multi.cn", fetcher);
+    expect(result.status).toBe("direct");
+    expect(result.isChinaIp).toBe(true);
+    expect(result.resolvedIps).toHaveLength(2);
+  });
+
+  it("classifies domains with multiple non-Chinese IPs", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 0,
+        Answer: [
+          { name: "global.com", type: 1, TTL: 300, data: "142.250.80.46" },
+          { name: "global.com", type: 1, TTL: 300, data: "142.250.80.78" },
+        ],
+      }));
+    });
+
+    const result = await checkConnectivity("global.com", fetcher);
+    expect(result.status).toBe("likely-proxy");
+    expect(result.isChinaIp).toBe(false);
+    expect(result.resolvedIps).toHaveLength(2);
+  });
+
+  it("handles DNS response with non-A records", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 0,
+        Answer: [
+          { name: "example.com", type: 28, TTL: 300, data: "2001:db8::1" },
+        ],
+      }));
+    });
+
+    const result = await checkConnectivity("example.com", fetcher);
+    expect(result.status).toBe("unknown");
+    expect(result.reason).toBe("DNS resolution failed");
+  });
+
+  it("handles DNS response with non-zero status", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 3, // NXDOMAIN
+        Answer: [],
+      }));
+    });
+
+    const result = await checkConnectivity("nonexistent.example", fetcher);
+    expect(result.status).toBe("unknown");
+  });
+
+  it("handles DNS response with empty Answer array", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 0,
+        Answer: [],
+      }));
+    });
+
+    const result = await checkConnectivity("no-records.example", fetcher);
+    expect(result.status).toBe("unknown");
+    expect(result.reason).toBe("DNS resolution failed");
+  });
+
+  it("handles DNS response with only AAAA records", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 0,
+        Answer: [
+          { name: "ipv6.example", type: 28, TTL: 300, data: "2001:db8::1" },
+        ],
+      }));
+    });
+
+    const result = await checkConnectivity("ipv6.example", fetcher);
+    expect(result.status).toBe("unknown");
+    expect(result.resolvedIps).toEqual([]);
+  });
+
+  it("handles DNS response without Answer field", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(JSON.stringify({
+        Status: 0,
+      }));
+    });
+
+    const result = await checkConnectivity("no-answer.example", fetcher);
+    expect(result.status).toBe("unknown");
+  });
 });

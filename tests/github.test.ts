@@ -112,4 +112,21 @@ describe("github upload helper", () => {
     await expect(uploadMergedSurgeList({ ...validPayload, token: "short" }, fetcher)).rejects.toThrow("GitHub token is required");
     expect(fetcher).not.toHaveBeenCalled();
   });
+
+  it("validates payload with undefined owner and repo", () => {
+    expect(validateGitHubUploadRequest({ ...validPayload, owner: undefined as unknown as string })).toContain("owner is invalid");
+    expect(validateGitHubUploadRequest({ ...validPayload, repo: undefined as unknown as string })).toContain("repo is invalid");
+    expect(validateGitHubUploadRequest({ ...validPayload, owner: null as unknown as string })).toContain("owner is invalid");
+    expect(validateGitHubUploadRequest({ ...validPayload, repo: null as unknown as string })).toContain("repo is invalid");
+  });
+
+  it("handles GitHub response without sha field", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ encoding: "base64", content: Buffer.from("DOMAIN,old.com\n", "utf8").toString("base64") }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ content: { path: "surge/OpenAI.list" }, commit: { sha: "commit-sha" } }), { status: 200 })) as unknown as typeof fetch;
+
+    const result = await uploadMergedSurgeList(validPayload, fetcher);
+    expect(result.commitSha).toBe("commit-sha");
+  });
 });

@@ -147,6 +147,55 @@ describe("analyzeUrl", () => {
     expect(throwResult.fetchError).toBe("blocked-string");
   });
 
+  it("skips non-textual content types like application/octet-stream", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response("binary data", {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      });
+    }) as unknown as typeof fetch;
+
+    const result = await analyzeUrl({ url: "https://download.example.com/data" }, fetcher);
+    expect(result.hosts.map((host) => host.host)).toEqual(["download.example.com"]);
+  });
+
+  it("skips binary paths when content type is missing", async () => {
+    const response = new Response("data", { status: 200 });
+    Object.defineProperty(response, "url", { value: "https://img.example.com/photo.png" });
+    const fetcher = vi.fn(async () => response) as unknown as typeof fetch;
+
+    const result = await analyzeUrl({ url: "https://img.example.com/photo.png" }, fetcher);
+    expect(result.hosts.map((host) => host.host)).toEqual(["img.example.com"]);
+  });
+
+  it("includes provider-confidence hosts from extracted content", async () => {
+    const fetcher = vi.fn(async () => {
+      return new Response(
+        `<html><script src="https://cdn-apple.com/assets/app.js"></script></html>`,
+        {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        },
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await analyzeUrl({ url: "https://example.com" }, fetcher);
+    const cdnHost = result.hosts.find((h) => h.host === "cdn-apple.com");
+    expect(cdnHost).toBeDefined();
+    expect(cdnHost?.confidence).toBe("provider");
+    expect(cdnHost?.reasons.some((r) => r.includes("provider"))).toBe(true);
+  });
+
+  it("does not skip non-binary paths when content type is missing", async () => {
+    const response = new Response("<html>content</html>", { status: 200 });
+    Object.defineProperty(response, "url", { value: "https://example.com/page.html" });
+    const fetcher = vi.fn(async () => response) as unknown as typeof fetch;
+
+    const result = await analyzeUrl({ url: "https://example.com/page.html" }, fetcher);
+    // Should extract hosts from the HTML content since path is not binary
+    expect(result.hosts.length).toBeGreaterThan(0);
+  });
+
   it("accepts each supported textual content type", async () => {
     const contentTypes = [
       "application/json",
