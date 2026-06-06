@@ -1,9 +1,11 @@
 stages:
   - test
   - deploy
+  - docker
 
 variables:
   NODE_VERSION: "22"
+  IMAGE_NAME: ghcr.io/lariya-aa/surge-rule-studio
 
 # ── Test stage ──────────────────────────────────────────────
 test:
@@ -40,3 +42,21 @@ deploy:
   environment:
     name: production
     url: https://surge-rule-studio.${CLOUDFLARE_ACCOUNT_ID}.workers.dev
+
+# ── Build & push Docker image to GitHub Container Registry ──
+docker:
+  stage: docker
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - echo "${GITHUB_TOKEN}" | docker login ghcr.io -u Lariya-aa --password-stdin
+  script:
+    - docker build -t ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA} -t ${IMAGE_NAME}:latest .
+    - docker push ${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
+    - docker push ${IMAGE_NAME}:latest
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
